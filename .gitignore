@@ -1,0 +1,9 @@
+# Bỏ qua thư viện nặng
+node_modules/
+
+# Bỏ qua các file bảo mật
+.env
+.env.*
+
+# Bỏ qua log
+npm-debug.logv

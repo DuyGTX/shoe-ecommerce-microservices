@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  postgres-db:
+    image: postgres:15-alpine
+    container_name: shoe_postgres
+    restart: always
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: shoe_user_db
+    ports:
+      - "5433:5432" # Cổng đã đổi lúc nãy
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # --- THÊM PHẦN NÀY CHO GIAI ĐOẠN 2 ---
+  mongo-db:
+    image: mongo:6
+    container_name: shoe_mongo
+    restart: always
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+volumes:
+  postgres_data:
+  mongo_data: # Nhớ thêm dòng này

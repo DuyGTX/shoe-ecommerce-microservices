@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Công cụ Upload Ảnh Lên Cloudinary</title>
+    <style>
+        body { font-family: sans-serif; padding: 50px; text-align: center; }
+        .box { border: 2px dashed #ccc; padding: 30px; border-radius: 10px; display: inline-block; }
+        button { padding: 10px 20px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; margin-top: 15px;}
+        #result { margin-top: 20px; color: green; font-weight: bold; word-break: break-all; }
+        img { max-width: 300px; margin-top: 15px; border-radius: 10px; display: none; }
+    </style>
+</head>
+<body>
+
+    <div class="box">
+        <h2>Thử nghiệm Upload Ảnh qua Gateway</h2>
+        <input type="file" id="imageInput" accept="image/*">
+        <br>
+        <button onclick="uploadImage()">🚀 Bắn Lên Mây!</button>
+        
+        <div id="result"></div>
+        <img id="preview" src="" alt="Ảnh tải lên">
+    </div>
+
+    <script>
+        async function uploadImage() {
+            const fileInput = document.getElementById('imageInput');
+            const resultDiv = document.getElementById('result');
+            const previewImg = document.getElementById('preview');
+
+            if (fileInput.files.length === 0) {
+                return alert("Bạn chưa chọn ảnh!");
+            }
+
+            // Gói file vào FormData (Cách Frontend thực tế hay làm)
+            const formData = new FormData();
+            formData.append('image', fileInput.files[0]);
+
+            resultDiv.innerText = "⏳ Đang upload lên Cloudinary... Vui lòng đợi...";
+
+            try {
+                // Gửi thẳng vào Cổng tiếp tân (Gateway) của bạn
+                const response = await fetch('http://localhost:8000/api/products/upload-image', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    resultDiv.innerText = "✅ Upload thành công! Link ảnh của bạn:\n" + data.imageUrl;
+                    previewImg.src = data.imageUrl;
+                    previewImg.style.display = "block"; // Hiện ảnh ra màn hình
+                } else {
+                    resultDiv.innerText = "❌ Lỗi: " + data.message;
+                }
+            } catch (error) {
+                resultDiv.innerText = "❌ Không thể kết nối đến server. Đảm bảo Gateway đang chạy!";
+            }
+        }
+    </script>
+</body>
+</html>
