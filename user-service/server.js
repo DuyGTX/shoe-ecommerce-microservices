@@ -1,3 +1,4 @@
+const amqp = require('amqplib');
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
@@ -36,7 +37,37 @@ const initUsersTable = async () => {
     }
 };
 initUsersTable();
+// ---------------------------------------------------------
+// LÍNH GÁC RABBITMQ (Lắng nghe tin nhắn xóa giỏ hàng)
+// ---------------------------------------------------------
+const consumeRabbitMQ = async () => {
+    try {
+        const connection = await amqp.connect(process.env.RABBITMQ_URL);
+        const channel = await connection.createChannel();
+        await channel.assertQueue('clear_cart_queue');
+        
+        console.log('🐇 Đã túc trực tại Bưu điện RabbitMQ, chờ tin nhắn...');
 
+        // Khi có bất kỳ ai ném thư vào hòm 'clear_cart_queue'
+        channel.consume('clear_cart_queue', async (msg) => {
+            if (msg !== null) {
+                // Đọc thư
+                const data = JSON.parse(msg.content.toString());
+                console.log(`[x] Vừa nhận được thư báo xóa giỏ hàng cho User ID: ${data.userId}`);
+                
+                // Thực thi lệnh xóa Database
+                await pool.query('DELETE FROM cart_items WHERE user_id = $1', [data.userId]);
+                console.log('✅ Đã dọn sạch giỏ hàng theo lệnh của Bưu điện!');
+
+                // Báo cáo lại cho Bưu điện là "Tôi đã xử lý xong tờ giấy này, hãy hủy nó đi"
+                channel.ack(msg); 
+            }
+        });
+    } catch (error) {
+        console.error('❌ Lỗi kết nối RabbitMQ:', error.message);
+    }
+};
+consumeRabbitMQ();
 // ---------------------------------------------------------
 // 2. CÁC API CỦA USER SERVICE
 // ---------------------------------------------------------

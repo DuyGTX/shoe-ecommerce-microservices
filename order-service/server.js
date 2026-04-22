@@ -1,3 +1,4 @@
+const amqp = require('amqplib');
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -5,11 +6,25 @@ const jwt = require('jsonwebtoken');
 require('dotenv').config();
 const { pool, initDB } = require('./db');
 
+
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 initDB();
+let rabbitChannel;
+const connectRabbitMQ = async () => {
+    try {
+        const connection = await amqp.connect(process.env.RABBITMQ_URL);
+        rabbitChannel = await connection.createChannel();
+        // Đảm bảo hòm thư tên là 'clear_cart_queue' luôn tồn tại
+        await rabbitChannel.assertQueue('clear_cart_queue'); 
+        console.log('🐇 Đã kết nối Bưu điện RabbitMQ thành công!');
+    } catch (error) {
+        console.error('❌ Lỗi kết nối RabbitMQ:', error.message);
+    }
+};
+connectRabbitMQ();
 
 // Middleware Bảo Vệ
 const verifyToken = (req, res, next) => {
@@ -56,11 +71,14 @@ app.post('/checkout', verifyToken, async (req, res) => {
             );
         }
 
-        // 3. GỌI LẠI USER SERVICE: "Thanh toán xong rồi, xóa sạch giỏ hàng đi!"
-        await axios.delete('http://localhost:3001/cart/clear', config);
-
+        // Lệnh cũ (ĐÃ XÓA): await axios.delete('http://localhost:3001/cart/clear', config);
+        
+        // 3. GỬI THƯ BÁO XÓA GIỎ HÀNG QUA RABBITMQ (BẤT ĐỒNG BỘ)
+        const message = JSON.stringify({ userId: userId });
+        rabbitChannel.sendToQueue('clear_cart_queue', Buffer.from(message));
+        console.log(`✉️ Đã gửi thư yêu cầu xóa giỏ hàng của User ID: ${userId}`);
         res.status(200).json({
-            message: '🎉 Chốt đơn thành công!',
+            message: '🎉 Chốt đơn thành công! (Dữ liệu đang được xử lý ngầm)',
             orderId: orderId,
             totalPaid: grandTotal
         });
