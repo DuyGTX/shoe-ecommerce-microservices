@@ -1,6 +1,9 @@
 version: '3.8'
 
 services:
+  # ==========================================
+  # 1. DATABASE
+  # ==========================================
   postgres-db:
     image: postgres:15-alpine
     container_name: shoe_postgres
@@ -10,11 +13,10 @@ services:
       POSTGRES_PASSWORD: password123
       POSTGRES_DB: shoe_user_db
     ports:
-      - "5433:5432" # Cổng đã đổi lúc nãy
+      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
-  # --- THÊM PHẦN NÀY CHO GIAI ĐOẠN 2 ---
   mongo-db:
     image: mongo:6
     container_name: shoe_mongo
@@ -24,6 +26,55 @@ services:
     volumes:
       - mongo_data:/data/db
 
+  # ==========================================
+  # 2. MICROSERVICES
+  # ==========================================
+  api-gateway:
+    build: ./api-gateway
+    container_name: shoe_api_gateway
+    ports:
+      - "8000:8000"
+    depends_on:
+      - user-service
+      - product-service
+      - order-service
+
+  user-service:
+    build: ./user-service
+    container_name: shoe_user_service
+    ports:
+      - "3001:3001"
+    environment:
+      - DB_HOST=postgres-db
+      - DB_PORT=5432
+    depends_on:
+      - postgres-db
+
+  product-service:
+    build: ./product-service
+    container_name: shoe_product_service
+    ports:
+      - "3002:3002"
+    environment:
+      - MONGO_URL=mongodb://mongo-db:27017/shoe_product_db
+      - MONGO_URI=mongodb://mongo-db:27017/shoe_product_db
+    depends_on:
+      - mongo-db
+
+  order-service:
+    build: ./order-service
+    container_name: shoe_order_service
+    ports:
+      - "3003:3003"
+    environment:
+      - DB_HOST=postgres-db
+      - DB_PORT=5432
+    depends_on:
+      - postgres-db
+
+# ==========================================
+# 3. VOLUMES
+# ==========================================
 volumes:
   postgres_data:
-  mongo_data: # Nhớ thêm dòng này
+  mongo_data:

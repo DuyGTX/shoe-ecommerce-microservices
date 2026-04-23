@@ -169,7 +169,7 @@ app.post('/cart/add', verifyToken, async (req, res) => {
         const { productId, quantity, color, size } = req.body;
 
         // ... (Toàn bộ phần code logic gọi Axios và lưu PostgreSQL ở dưới GIỮ NGUYÊN) ...
-        const response = await axios.get(`http://localhost:3002/${productId}`);
+        const response = await axios.get(`http://product-service:3002/${productId}`);
         const product = response.data.data;
 
         if (!product) return res.status(404).json({ message: 'Sản phẩm không tồn tại!' });
@@ -280,7 +280,7 @@ app.put('/cart/update', verifyToken, async (req, res) => {
         const item = cartItemResult.rows[0];
 
         // 2. GỌI ĐIỆN KIỂM TRA KHO (Tránh việc khách tăng số lượng lố hàng tồn kho)
-        const response = await axios.get(`http://localhost:3002/${item.product_id}`);
+        const response = await axios.get(`http://product-service:3002/${item.product_id}`);
         const product = response.data.data;
         const variant = product.variants.find(v => v.color === item.color && v.size === item.size);
 

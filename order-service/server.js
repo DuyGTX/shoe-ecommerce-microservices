@@ -46,7 +46,7 @@ app.post('/checkout', verifyToken, async (req, res) => {
         const config = { headers: { Authorization: `Bearer ${req.tokenString}` } };
 
         // 1. NHẤC MÁY GỌI USER SERVICE: "Lấy cho tôi giỏ hàng của sếp lớn!"
-        const cartResponse = await axios.get('http://localhost:3001/cart', config);
+        const cartResponse = await axios.get('http://user-service:3001/cart', config);
         const cartItems = cartResponse.data.data;
         const grandTotal = cartResponse.data.grandTotal;
 
@@ -71,7 +71,7 @@ app.post('/checkout', verifyToken, async (req, res) => {
             );
         }
 
-        // Lệnh cũ (ĐÃ XÓA): await axios.delete('http://localhost:3001/cart/clear', config);
+        // Lệnh cũ (ĐÃ XÓA): await axios.delete('http://user-service:3001/cart/clear', config);
         
         // 3. GỬI THƯ BÁO XÓA GIỎ HÀNG QUA RABBITMQ (BẤT ĐỒNG BỘ)
         const message = JSON.stringify({ userId: userId });

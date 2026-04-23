@@ -12,14 +12,14 @@ app.use(cors());
 
 // Chuyển hướng sang User Service (Cổng 3001)
 app.use('/api/users', createProxyMiddleware({ 
-    target: 'http://localhost:3001', 
+    target: 'http://user-service:3001', 
     changeOrigin: true,
     pathRewrite: { '^/api/users': '' } 
 }));
 
 // Chuyển hướng sang Product Service (Cổng 3002)
 app.use('/api/products', createProxyMiddleware({ 
-    target: 'http://localhost:3002', 
+    target: 'http://product-service:3002', 
     changeOrigin: true,
     pathRewrite: { '^/api/products': '' } 
 }));
@@ -38,7 +38,7 @@ app.post('/api/cart/add', async (req, res) => {
             headers: { Authorization: req.headers.authorization } 
         };
         
-        const response = await axios.post('http://localhost:3001/cart/add', req.body, config);
+        const response = await axios.post('http://user-service:3001/cart/add', req.body, config);
         res.status(response.status).json(response.data);
     } catch (err) {
         res.status(err.response?.status || 500).json(err.response?.data || { message: 'Lỗi Gateway' });
@@ -52,7 +52,7 @@ app.get('/api/cart', async (req, res) => {
             headers: { Authorization: req.headers.authorization } 
         };
         
-        const response = await axios.get('http://localhost:3001/cart', config);
+        const response = await axios.get('http://user-service:3001/cart', config);
         res.status(response.status).json(response.data);
     } catch (err) {
         res.status(err.response?.status || 500).json(err.response?.data || { message: 'Lỗi Gateway' });
@@ -62,7 +62,7 @@ app.get('/api/cart', async (req, res) => {
 app.put('/api/cart/update', async (req, res) => {
     try {
         const config = { headers: { Authorization: req.headers.authorization } };
-        const response = await axios.put('http://localhost:3001/cart/update', req.body, config);
+        const response = await axios.put('http://user-service:3001/cart/update', req.body, config);
         res.status(response.status).json(response.data);
     } catch (err) {
         res.status(err.response?.status || 500).json(err.response?.data || { message: 'Lỗi Gateway' });
@@ -73,7 +73,7 @@ app.put('/api/cart/update', async (req, res) => {
 app.delete('/api/cart/remove/:cartItemId', async (req, res) => {
     try {
         const config = { headers: { Authorization: req.headers.authorization } };
-        const response = await axios.delete(`http://localhost:3001/cart/remove/${req.params.cartItemId}`, config);
+        const response = await axios.delete(`http://user-service:3001/cart/remove/${req.params.cartItemId}`, config);
         res.status(response.status).json(response.data);
     } catch (err) {
         res.status(err.response?.status || 500).json(err.response?.data || { message: 'Lỗi Gateway' });
@@ -84,7 +84,7 @@ app.post('/api/orders/checkout', async (req, res) => {
     try {
         const config = { headers: { Authorization: req.headers.authorization } };
         // GỌI SANG 3003 NHÉ!
-        const response = await axios.post('http://localhost:3003/checkout', {}, config);
+        const response = await axios.post('http://order-service:3003/checkout', {}, config);
         res.status(response.status).json(response.data);
     } catch (err) {
         res.status(err.response?.status || 500).json(err.response?.data || { message: 'Lỗi Gateway Order' });
@@ -97,7 +97,7 @@ app.get('/api/orders/history', async (req, res) => {
         const config = { headers: { Authorization: req.headers.authorization } };
         
         // Gọi sang 3003 lấy dữ liệu
-        const response = await axios.get('http://localhost:3003/history', config);
+        const response = await axios.get('http://order-service:3003/history', config);
         res.status(response.status).json(response.data);
     } catch (err) {
         res.status(err.response?.status || 500).json(err.response?.data || { message: 'Lỗi Gateway Order History' });
