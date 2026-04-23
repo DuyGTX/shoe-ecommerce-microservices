@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const multer = require('multer');
 const { v2: cloudinary } = require('cloudinary');
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const redis = require('redis'); // <--- [THÊM MỚI] Import thư viện Redis
 require('dotenv').config();
 
 const app = express();
@@ -11,9 +12,9 @@ app.use(cors());
 app.use(express.json());
 
 // ---------------------------------------------------------
-// 1. KẾT NỐI MONGODB & CẤU HÌNH CLOUDINARY
+// 1. KẾT NỐI DB, CLOUDINARY & REDIS
 // ---------------------------------------------------------
-mongoose.connect(process.env.MONGO_URI)
+mongoose.connect(process.env.MONGO_URI || process.env.MONGO_URL) // <--- Cập nhật để nhận 1 trong 2 biến
     .then(() => console.log('🍃 Đã kết nối thành công với MongoDB!'))
     .catch(err => console.error('❌ Lỗi kết nối MongoDB:', err));
 
@@ -32,6 +33,18 @@ const storage = new CloudinaryStorage({
 });
 const upload = multer({ storage: storage });
 
+// [THÊM MỚI] Khởi tạo kết nối Redis
+// Trỏ đến tên container 'redis-cache' trong docker-compose.yml
+const redisClient = redis.createClient({ url: 'redis://redis-cache:6379' });
+
+// Xử lý lỗi Redis nếu có
+redisClient.on('error', (err) => console.log('Redis Client Error', err));
+
+// Bắt đầu kết nối
+redisClient.connect().then(() => {
+    console.log('🚀 Đã kết nối thành công với Redis!');
+});
+
 // ---------------------------------------------------------
 // 2. ĐỊNH NGHĨA KHUÔN MẪU SẢN PHẨM (GIÀY)
 // ---------------------------------------------------------
@@ -40,8 +53,8 @@ const productSchema = new mongoose.Schema({
     gender: { type: String, enum: ['Nam', 'Nữ', 'Unisex'], required: true },
     brand: { type: String, required: true },
     category: { type: String, required: true },
-    thumbnail: { type: String }, // Đã thêm lại trường ảnh
-    images: [String],            // Đã thêm lại trường ảnh
+    thumbnail: { type: String }, 
+    images: [String],            
     price: { type: Number, required: true },
     salePrice: { type: Number, default: null },
     variants: [
@@ -59,12 +72,10 @@ const Product = mongoose.model('Product', productSchema);
 // 3. CÁC API CỦA PRODUCT SERVICE
 // ---------------------------------------------------------
 
-// API 1: Test sức khỏe
 app.get('/health', (req, res) => {
     res.status(200).json({ message: 'Product Service đang hoạt động mượt mà!' });
 });
 
-// API 2: Upload ảnh lên Cloudinary
 app.post('/upload-image', upload.single('image'), (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ message: 'Vui lòng chọn ảnh!' });
@@ -74,28 +85,49 @@ app.post('/upload-image', upload.single('image'), (req, res) => {
     }
 });
 
-// API 3: Thêm giày mới
 app.post('/add', async (req, res) => {
     try {
         const newProduct = new Product(req.body);
         const savedProduct = await newProduct.save();
+        
+        // [THÊM MỚI] Xóa Cache khi có sản phẩm mới để dữ liệu luôn cập nhật
+        await redisClient.del('products_all');
+        console.log('🧹 Đã xóa cache vì có sản phẩm mới!');
+
         res.status(201).json({ message: 'Đã thêm giày mới!', data: savedProduct });
     } catch (err) {
         res.status(500).json({ message: 'Lỗi thêm sản phẩm', error: err.message });
     }
 });
 
-// API 4: Lấy danh sách toàn bộ giày
+// [ĐÃ CẬP NHẬT] API Lấy danh sách toàn bộ giày (Tích hợp Redis)
 app.get('/all', async (req, res) => {
+    const CACHE_KEY = 'products_all';
+
     try {
+        // 1. Kiểm tra xem dữ liệu đã có trong Redis chưa
+        const cachedProducts = await redisClient.get(CACHE_KEY);
+
+        if (cachedProducts) {
+            // Nếu có: Trả về ngay lập tức
+            console.log("⚡ Cache Hit! - Trả dữ liệu siêu tốc từ Redis");
+            return res.status(200).json(JSON.parse(cachedProducts));
+        }
+
+        // 2. Nếu không có (Cache Miss): Vào MongoDB lấy dữ liệu
+        console.log("🐢 Cache Miss! - Phải chui vào MongoDB lấy dữ liệu");
         const products = await Product.find(); 
+
+        // 3. Lưu vào Redis để dùng cho lần sau, và set thời gian sống (TTL) là 60 giây
+        // Dữ liệu trong Database có thể thay đổi, nên ta lưu tạm 60s thôi.
+        await redisClient.setEx(CACHE_KEY, 60, JSON.stringify({ total: products.length, data: products }));
+
         res.status(200).json({ total: products.length, data: products });
     } catch (err) {
         res.status(500).json({ message: 'Lỗi lấy dữ liệu', error: err.message });
     }
 });
 
-// API 5: Lọc và Tìm kiếm sản phẩm (ĐÃ ĐƯỢC CHUYỂN LÊN TRÊN CÙNG)
 app.get('/search', async (req, res) => {
     try {
         const { gender, brand, category } = req.query; 
@@ -112,7 +144,6 @@ app.get('/search', async (req, res) => {
     }
 });
 
-// API 6: Xem chi tiết 1 đôi giày (LUÔN PHẢI NẰM CUỐI CÙNG TRONG CÁC LỆNH GET)
 app.get('/:id', async (req, res) => {
     try {
         const product = await Product.findById(req.params.id);

@@ -71,6 +71,11 @@ services:
       - DB_PORT=5432
     depends_on:
       - postgres-db
+  redis-cache:
+    image: redis:alpine
+    container_name: shoe_redis
+    ports:
+      - "6379:6379"
 
 # ==========================================
 # 3. VOLUMES

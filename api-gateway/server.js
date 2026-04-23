@@ -2,9 +2,237 @@ const express = require('express');
 const cors = require('cors');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const axios = require('axios');
-
+const swaggerUi = require('swagger-ui-express');
+const swaggerDocs = require('./swagger');
 const app = express();
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
 app.use(cors());
+
+/**
+ * @swagger
+ * /api/products/all:
+ *   get:
+ *     summary: Lấy danh sách toàn bộ sản phẩm
+ *     tags: [Product Service]
+ *     responses:
+ *       200:
+ *         description: Trả về mảng chứa các đôi giày
+ *       500:
+ *         description: Lỗi máy chủ hoặc đứt kết nối Mongo
+ */
+
+/**
+ * @swagger
+ * /api/users/register:
+ *   post:
+ *     summary: Đăng ký tài khoản mới
+ *     tags: [User Service]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - username
+ *               - email
+ *               - password
+ *             properties:
+ *               username:
+ *                 type: string
+ *                 example: "nguyenvana"
+ *               email:
+ *                 type: string
+ *                 example: "nguyenvana@gmail.com"
+ *               password:
+ *                 type: string
+ *                 example: "123456"
+ *     responses:
+ *       201:
+ *         description: Đăng ký thành công
+ *       400:
+ *         description: Thông tin không hợp lệ
+ */
+
+/**
+ * @swagger
+ * /api/users/login:
+ *   post:
+ *     summary: Đăng nhập
+ *     tags: [User Service]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - email
+ *               - password
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 example: "nguyenvana@gmail.com"
+ *               password:
+ *                 type: string
+ *                 example: "123456"
+ *     responses:
+ *       200:
+ *         description: Đăng nhập thành công, trả về token
+ *       401:
+ *         description: Sai email hoặc mật khẩu
+ */
+
+/**
+ * @swagger
+ * /api/cart:
+ *   get:
+ *     summary: Xem giỏ hàng của user hiện tại
+ *     tags: [Cart Service]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Trả về chi tiết giỏ hàng và tổng tiền
+ *       401:
+ *         description: Chưa đăng nhập
+ */
+
+/**
+ * @swagger
+ * /api/cart/add:
+ *   post:
+ *     summary: Thêm sản phẩm vào giỏ hàng
+ *     tags: [Cart Service]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - userId
+ *               - productId
+ *               - quantity
+ *               - color
+ *               - size
+ *             properties:
+ *               userId:
+ *                 type: integer
+ *                 example: 8
+ *               productId:
+ *                 type: string
+ *                 example: "69e7a9ef235018961eec4634"
+ *               quantity:
+ *                 type: integer
+ *                 example: 1
+ *               color:
+ *                 type: string
+ *                 example: "Hồng"
+ *               size:
+ *                 type: number
+ *                 example: 38
+ *     responses:
+ *       200:
+ *         description: Thêm vào giỏ hàng thành công
+ *       401:
+ *         description: Chưa đăng nhập
+ *       500:
+ *         description: Lỗi hệ thống
+ */
+
+/**
+ * @swagger
+ * /api/cart/update:
+ *   put:
+ *     summary: Cập nhật số lượng sản phẩm trong giỏ hàng
+ *     tags: [Cart Service]
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - cartItemId
+ *               - quantity
+ *             properties:
+ *               cartItemId:
+ *                 type: integer
+ *                 example: 1
+ *               quantity:
+ *                 type: integer
+ *                 example: 2
+ *     responses:
+ *       200:
+ *         description: Cập nhật thành công
+ *       401:
+ *         description: Chưa đăng nhập
+ *       500:
+ *         description: Lỗi hệ thống
+ */
+
+/**
+ * @swagger
+ * /api/cart/remove/{cartItemId}:
+ *   delete:
+ *     summary: Xóa sản phẩm khỏi giỏ hàng
+ *     tags: [Cart Service]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: cartItemId
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID của item trong giỏ hàng
+ *         example: 1
+ *     responses:
+ *       200:
+ *         description: Xóa thành công
+ *       401:
+ *         description: Chưa đăng nhập
+ *       500:
+ *         description: Lỗi hệ thống
+ */
+
+/**
+ * @swagger
+ * /api/orders/checkout:
+ *   post:
+ *     summary: Thanh toán giỏ hàng
+ *     tags: [Order Service]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       201:
+ *         description: Đặt hàng thành công
+ *       401:
+ *         description: Chưa đăng nhập
+ *       400:
+ *         description: Giỏ hàng trống
+ */
+
+/**
+ * @swagger
+ * /api/orders/history:
+ *   get:
+ *     summary: Xem lịch sử đơn hàng
+ *     tags: [Order Service]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Trả về danh sách đơn hàng
+ *       401:
+ *         description: Chưa đăng nhập
+ */
+
 
 // =========================================================
 // 1. NHÓM PROXY (TUYỆT ĐỐI KHÔNG ĐỂ express.json Ở TRÊN NHÓM NÀY)
