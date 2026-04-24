@@ -15,6 +15,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Prepare CI env files
+        run: |
+          cp .env.example .env
+          cp .env.example user-service/.env
+          cp .env.example order-service/.env
+          cat > product-service/.env <<'EOT'
+          PORT=3002
+          MONGO_URI=mongodb://mongo-db:27017/shoe_product_db
+          MONGO_URL=mongodb://mongo-db:27017/shoe_product_db
+          REDIS_URL=redis://redis-cache:6379
+          ADMIN_SECRET=ci-admin-secret
+          CLOUDINARY_CLOUD_NAME=dummy
+          CLOUDINARY_API_KEY=dummy
+          CLOUDINARY_API_SECRET=dummy
+          EOT
+
+          # Ensure required root vars exist for docker-compose interpolation
+          {
+            echo "POSTGRES_USER=admin"
+            echo "POSTGRES_PASSWORD=ci-password"
+            echo "JWT_SECRET=ci-jwt-secret"
+            echo "ADMIN_SECRET=ci-admin-secret"
+            echo "USER_DB_NAME=shoe_user_db"
+            echo "ORDER_DB_NAME=shoe_order_db"
+            echo "USER_SERVICE_PORT=3001"
+            echo "PRODUCT_SERVICE_PORT=3002"
+            echo "ORDER_SERVICE_PORT=3003"
+          } > .env
+
       - name: Start services
         run: docker compose up -d --build
 
