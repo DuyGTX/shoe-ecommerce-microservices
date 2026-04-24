@@ -14,4 +14,4 @@ RUN npm install
 COPY . .
 
 # 6. Lệnh để chạy Service
-CMD ["npm", "run", "dev"]
+CMD ["npm", "start"]
