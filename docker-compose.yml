@@ -164,6 +164,32 @@ services:
       timeout: 5s
       retries: 5
 
+  smoke-test:
+    image: node:20-alpine
+    container_name: shoe_smoke_test
+    working_dir: /app
+    command: ["node", "smoke-test.js"]
+    volumes:
+      - ./:/app:ro
+    environment:
+      - GATEWAY_URL=http://api-gateway:8000
+      - USER_SERVICE_URL=http://user-service:3001
+      - PRODUCT_SERVICE_URL=http://product-service:3002
+      - ORDER_SERVICE_URL=http://order-service:3003
+      - SMOKE_TIMEOUT_MS=6000
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+      user-service:
+        condition: service_healthy
+      product-service:
+        condition: service_healthy
+      order-service:
+        condition: service_healthy
+    restart: "no"
+    profiles:
+      - test
+
 # ==========================================
 # 3. VOLUMES
 # ==========================================
