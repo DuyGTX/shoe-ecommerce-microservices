@@ -11,12 +11,48 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const ADMIN_SECRET = process.env.ADMIN_SECRET;
+const REDIS_URL = process.env.REDIS_URL || 'redis://redis-cache:6379';
+
+const requireAdmin = (req, res, next) => {
+    if (!ADMIN_SECRET) {
+        return res.status(500).json({ message: 'Thiếu cấu hình ADMIN_SECRET.' });
+    }
+
+    if (req.headers['x-admin-secret'] !== ADMIN_SECRET) {
+        return res.status(403).json({ message: 'Bạn không có quyền thao tác tài nguyên này.' });
+    }
+
+    next();
+};
+
+const clearProductCache = async () => {
+    await redisClient.del('products_all');
+};
+
 // ---------------------------------------------------------
 // 1. KẾT NỐI DB, CLOUDINARY & REDIS
 // ---------------------------------------------------------
-mongoose.connect(process.env.MONGO_URI || process.env.MONGO_URL) // <--- Cập nhật để nhận 1 trong 2 biến
-    .then(() => console.log('🍃 Đã kết nối thành công với MongoDB!'))
-    .catch(err => console.error('❌ Lỗi kết nối MongoDB:', err));
+const connectMongoWithRetry = async () => {
+    const mongoUri = process.env.MONGO_URI || process.env.MONGO_URL;
+    let lastError;
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+        try {
+            await mongoose.connect(mongoUri);
+            console.log('🍃 Đã kết nối thành công với MongoDB!');
+            return;
+        } catch (err) {
+            lastError = err;
+            console.error(`❌ Kết nối MongoDB thất bại (lần ${attempt}/5):`, err.message);
+            await sleep(1000 * attempt);
+        }
+    }
+
+    console.error('❌ Không thể kết nối MongoDB sau nhiều lần thử:', lastError?.message);
+};
 
 cloudinary.config({
     cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
@@ -35,15 +71,36 @@ const upload = multer({ storage: storage });
 
 // [THÊM MỚI] Khởi tạo kết nối Redis
 // Trỏ đến tên container 'redis-cache' trong docker-compose.yml
-const redisClient = redis.createClient({ url: 'redis://redis-cache:6379' });
+const redisClient = redis.createClient({ url: REDIS_URL });
+let redisReady = false;
 
 // Xử lý lỗi Redis nếu có
 redisClient.on('error', (err) => console.log('Redis Client Error', err));
-
-// Bắt đầu kết nối
-redisClient.connect().then(() => {
+redisClient.on('ready', () => {
+    redisReady = true;
     console.log('🚀 Đã kết nối thành công với Redis!');
 });
+redisClient.on('end', () => {
+    redisReady = false;
+    console.warn('⚠️ Redis connection closed.');
+});
+
+const connectRedisWithRetry = async () => {
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+        try {
+            if (!redisClient.isOpen) {
+                await redisClient.connect();
+            }
+            return;
+        } catch (err) {
+            console.error(`❌ Kết nối Redis thất bại (lần ${attempt}/5):`, err.message);
+            await sleep(1000 * attempt);
+        }
+    }
+};
+
+connectMongoWithRetry();
+connectRedisWithRetry();
 
 // ---------------------------------------------------------
 // 2. ĐỊNH NGHĨA KHUÔN MẪU SẢN PHẨM (GIÀY)
@@ -73,7 +130,16 @@ const Product = mongoose.model('Product', productSchema);
 // ---------------------------------------------------------
 
 app.get('/health', (req, res) => {
-    res.status(200).json({ message: 'Product Service đang hoạt động mượt mà!' });
+    const mongoReady = mongoose.connection.readyState === 1;
+    const serviceReady = mongoReady && redisReady;
+    res.status(serviceReady ? 200 : 503).json({
+        service: 'product-service',
+        status: serviceReady ? 'ok' : 'degraded',
+        checks: {
+            mongo: mongoReady ? 'up' : 'down',
+            redis: redisReady ? 'up' : 'down'
+        }
+    });
 });
 
 app.post('/upload-image', upload.single('image'), (req, res) => {
@@ -85,13 +151,13 @@ app.post('/upload-image', upload.single('image'), (req, res) => {
     }
 });
 
-app.post('/add', async (req, res) => {
+app.post('/add', requireAdmin, async (req, res) => {
     try {
         const newProduct = new Product(req.body);
         const savedProduct = await newProduct.save();
         
         // [THÊM MỚI] Xóa Cache khi có sản phẩm mới để dữ liệu luôn cập nhật
-        await redisClient.del('products_all');
+        await clearProductCache();
         console.log('🧹 Đã xóa cache vì có sản phẩm mới!');
 
         res.status(201).json({ message: 'Đã thêm giày mới!', data: savedProduct });
@@ -116,7 +182,7 @@ app.get('/all', async (req, res) => {
 
         // 2. Nếu không có (Cache Miss): Vào MongoDB lấy dữ liệu
         console.log("🐢 Cache Miss! - Phải chui vào MongoDB lấy dữ liệu");
-        const products = await Product.find(); 
+        const products = await Product.find().sort({ createdAt: -1 }); 
 
         // 3. Lưu vào Redis để dùng cho lần sau, và set thời gian sống (TTL) là 60 giây
         // Dữ liệu trong Database có thể thay đổi, nên ta lưu tạm 60s thôi.
@@ -130,17 +196,57 @@ app.get('/all', async (req, res) => {
 
 app.get('/search', async (req, res) => {
     try {
-        const { gender, brand, category } = req.query; 
+        const { gender, brand, category, keyword, minPrice, maxPrice } = req.query; 
         let queryObj = {}; 
         
         if (gender) queryObj.gender = gender;
         if (brand) queryObj.brand = brand;
         if (category) queryObj.category = category;
+        if (keyword) queryObj.name = { $regex: keyword, $options: 'i' };
+        if (minPrice || maxPrice) {
+            queryObj.price = {};
+            if (minPrice) queryObj.price.$gte = Number(minPrice);
+            if (maxPrice) queryObj.price.$lte = Number(maxPrice);
+        }
 
-        const products = await Product.find(queryObj);
+        const products = await Product.find(queryObj).sort({ createdAt: -1 });
         res.status(200).json({ total: products.length, data: products });
     } catch (err) {
         res.status(500).json({ message: 'Lỗi tìm kiếm', error: err.message });
+    }
+});
+
+app.patch('/:id', requireAdmin, async (req, res) => {
+    try {
+        const updatedProduct = await Product.findByIdAndUpdate(
+            req.params.id,
+            req.body,
+            { new: true, runValidators: true }
+        );
+
+        if (!updatedProduct) {
+            return res.status(404).json({ message: 'Không tìm thấy sản phẩm để cập nhật!' });
+        }
+
+        await clearProductCache();
+        res.status(200).json({ message: 'Cập nhật sản phẩm thành công!', data: updatedProduct });
+    } catch (err) {
+        res.status(500).json({ message: 'Lỗi cập nhật sản phẩm', error: err.message });
+    }
+});
+
+app.delete('/:id', requireAdmin, async (req, res) => {
+    try {
+        const deletedProduct = await Product.findByIdAndDelete(req.params.id);
+
+        if (!deletedProduct) {
+            return res.status(404).json({ message: 'Không tìm thấy sản phẩm để xóa!' });
+        }
+
+        await clearProductCache();
+        res.status(200).json({ message: 'Xóa sản phẩm thành công!' });
+    } catch (err) {
+        res.status(500).json({ message: 'Lỗi xóa sản phẩm', error: err.message });
     }
 });
 

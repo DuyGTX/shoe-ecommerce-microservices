@@ -5,6 +5,35 @@ const axios = require('axios');
 const swaggerUi = require('swagger-ui-express');
 const swaggerDocs = require('./swagger');
 const app = express();
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const requestWithRetry = async (config, options = {}) => {
+    const retries = options.retries ?? 3;
+    const delayMs = options.delayMs ?? 250;
+    let lastError;
+
+    for (let attempt = 1; attempt <= retries; attempt += 1) {
+        try {
+            return await axios(config);
+        } catch (error) {
+            lastError = error;
+            if (attempt < retries) {
+                await sleep(delayMs * attempt);
+            }
+        }
+    }
+
+    throw lastError;
+};
+
+const probeService = async (name, url) => {
+    try {
+        await requestWithRetry({ method: 'get', url, timeout: 1500 }, { retries: 2, delayMs: 200 });
+        return { name, status: 'up' };
+    } catch (error) {
+        return { name, status: 'down', error: error.message };
+    }
+};
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
 app.use(cors());
 
@@ -34,11 +63,11 @@ app.use(cors());
  *           schema:
  *             type: object
  *             required:
- *               - username
+ *               - full_name
  *               - email
  *               - password
  *             properties:
- *               username:
+ *               full_name:
  *                 type: string
  *                 example: "nguyenvana"
  *               email:
@@ -258,6 +287,21 @@ app.use('/api/products', createProxyMiddleware({
 // =========================================================
 app.use(express.json()); // <-- Lính canh bắt đầu đứng từ đây!
 
+app.get('/health', async (req, res) => {
+    const checks = await Promise.all([
+        probeService('user-service', 'http://user-service:3001/health'),
+        probeService('product-service', 'http://product-service:3002/health'),
+        probeService('order-service', 'http://order-service:3003/health')
+    ]);
+
+    const hasFailure = checks.some((item) => item.status !== 'up');
+    return res.status(hasFailure ? 503 : 200).json({
+        service: 'api-gateway',
+        status: hasFailure ? 'degraded' : 'ok',
+        checks
+    });
+});
+
 // Chuyển hướng Giỏ Hàng bằng Axios
 app.post('/api/cart/add', async (req, res) => {
     try {
@@ -266,7 +310,7 @@ app.post('/api/cart/add', async (req, res) => {
             headers: { Authorization: req.headers.authorization } 
         };
         
-        const response = await axios.post('http://user-service:3001/cart/add', req.body, config);
+        const response = await requestWithRetry({ method: 'post', url: 'http://user-service:3001/cart/add', data: req.body, ...config, timeout: 4000 });
         res.status(response.status).json(response.data);
     } catch (err) {
         res.status(err.response?.status || 500).json(err.response?.data || { message: 'Lỗi Gateway' });
@@ -280,7 +324,7 @@ app.get('/api/cart', async (req, res) => {
             headers: { Authorization: req.headers.authorization } 
         };
         
-        const response = await axios.get('http://user-service:3001/cart', config);
+        const response = await requestWithRetry({ method: 'get', url: 'http://user-service:3001/cart', ...config, timeout: 4000 });
         res.status(response.status).json(response.data);
     } catch (err) {
         res.status(err.response?.status || 500).json(err.response?.data || { message: 'Lỗi Gateway' });
@@ -290,7 +334,7 @@ app.get('/api/cart', async (req, res) => {
 app.put('/api/cart/update', async (req, res) => {
     try {
         const config = { headers: { Authorization: req.headers.authorization } };
-        const response = await axios.put('http://user-service:3001/cart/update', req.body, config);
+        const response = await requestWithRetry({ method: 'put', url: 'http://user-service:3001/cart/update', data: req.body, ...config, timeout: 4000 });
         res.status(response.status).json(response.data);
     } catch (err) {
         res.status(err.response?.status || 500).json(err.response?.data || { message: 'Lỗi Gateway' });
@@ -301,7 +345,7 @@ app.put('/api/cart/update', async (req, res) => {
 app.delete('/api/cart/remove/:cartItemId', async (req, res) => {
     try {
         const config = { headers: { Authorization: req.headers.authorization } };
-        const response = await axios.delete(`http://user-service:3001/cart/remove/${req.params.cartItemId}`, config);
+        const response = await requestWithRetry({ method: 'delete', url: `http://user-service:3001/cart/remove/${req.params.cartItemId}`, ...config, timeout: 4000 });
         res.status(response.status).json(response.data);
     } catch (err) {
         res.status(err.response?.status || 500).json(err.response?.data || { message: 'Lỗi Gateway' });
@@ -312,7 +356,7 @@ app.post('/api/orders/checkout', async (req, res) => {
     try {
         const config = { headers: { Authorization: req.headers.authorization } };
         // GỌI SANG 3003 NHÉ!
-        const response = await axios.post('http://order-service:3003/checkout', {}, config);
+        const response = await requestWithRetry({ method: 'post', url: 'http://order-service:3003/checkout', data: {}, ...config, timeout: 5000 });
         res.status(response.status).json(response.data);
     } catch (err) {
         res.status(err.response?.status || 500).json(err.response?.data || { message: 'Lỗi Gateway Order' });
@@ -325,7 +369,7 @@ app.get('/api/orders/history', async (req, res) => {
         const config = { headers: { Authorization: req.headers.authorization } };
         
         // Gọi sang 3003 lấy dữ liệu
-        const response = await axios.get('http://order-service:3003/history', config);
+        const response = await requestWithRetry({ method: 'get', url: 'http://order-service:3003/history', ...config, timeout: 5000 });
         res.status(response.status).json(response.data);
     } catch (err) {
         res.status(err.response?.status || 500).json(err.response?.data || { message: 'Lỗi Gateway Order History' });

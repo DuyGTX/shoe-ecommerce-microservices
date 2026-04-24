@@ -13,6 +13,60 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const requestWithRetry = async (config, options = {}) => {
+  const retries = options.retries ?? 3;
+  const delayMs = options.delayMs ?? 250;
+  let lastError;
+
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      return await axios(config);
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries) {
+        await sleep(delayMs * attempt);
+      }
+    }
+  }
+
+  throw lastError;
+};
+
+const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
+const validateRegisterInput = ({ email, password, full_name }) => {
+  if (!email || !password || !full_name) {
+    return "Vui lòng điền đầy đủ email, mật khẩu và họ tên.";
+  }
+
+  if (!isValidEmail(email)) {
+    return "Email không đúng định dạng.";
+  }
+
+  if (String(password).length < 6) {
+    return "Mật khẩu phải có ít nhất 6 ký tự.";
+  }
+
+  return null;
+};
+
+const validateCartPayload = ({ productId, quantity, color, size }) => {
+  if (!productId || !color || size === undefined || quantity === undefined) {
+    return "Thiếu thông tin sản phẩm cần thêm vào giỏ hàng.";
+  }
+
+  if (!Number.isInteger(Number(quantity)) || Number(quantity) <= 0) {
+    return "Số lượng phải là số nguyên dương.";
+  }
+
+  if (!Number.isInteger(Number(size)) || Number(size) <= 0) {
+    return "Size phải là số nguyên dương.";
+  }
+
+  return null;
+};
+
 // ---------------------------------------------------------
 // 1. TỰ ĐỘNG TẠO BẢNG DATABASE
 // ---------------------------------------------------------
@@ -44,6 +98,14 @@ const consumeRabbitMQ = async () => {
   try {
     const connection = await amqp.connect(process.env.RABBITMQ_URL);
     const channel = await connection.createChannel();
+    connection.on("error", (err) => {
+      console.error("❌ RabbitMQ connection error:", err.message);
+    });
+    connection.on("close", async () => {
+      console.warn("⚠️ RabbitMQ disconnected, retrying in 3s...");
+      await sleep(3000);
+      consumeRabbitMQ();
+    });
     
     // 1. Cấu hình hàng đợi với độ bền cao
     await channel.assertQueue("clear_cart_queue", { durable: true });
@@ -90,14 +152,41 @@ consumeRabbitMQ();
 // ---------------------------------------------------------
 
 // API 1: Test sức khỏe
-app.get("/health", (req, res) => {
-  res.status(200).json({ message: "User Service đang hoạt động bình thường!" });
+app.get("/health", async (req, res) => {
+  try {
+    await pool.query("SELECT 1");
+    res.status(200).json({
+      service: "user-service",
+      status: "ok",
+      checks: {
+        postgres: "up",
+      },
+    });
+  } catch (err) {
+    res.status(503).json({
+      service: "user-service",
+      status: "down",
+      checks: {
+        postgres: "down",
+      },
+      error: err.message,
+    });
+  }
 });
 
 // API 2: Đăng ký tài khoản (Sign Up)
 app.post("/register", async (req, res) => {
   try {
     const { email, password, full_name } = req.body;
+
+    const validationError = validateRegisterInput({
+      email,
+      password,
+      full_name,
+    });
+    if (validationError) {
+      return res.status(400).json({ message: validationError });
+    }
     
     const userExists = await pool.query(
       "SELECT * FROM users WHERE email = $1",
@@ -129,6 +218,14 @@ app.post("/register", async (req, res) => {
 app.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ message: "Email và mật khẩu là bắt buộc." });
+    }
+
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ message: "Email không đúng định dạng." });
+    }
 
     const userResult = await pool.query(
       "SELECT * FROM users WHERE email = $1",
@@ -200,37 +297,52 @@ app.post("/cart/add", verifyToken, async (req, res) => {
     // Body bây giờ chỉ cần thông tin về món hàng
     const { productId, quantity, color, size } = req.body;
 
+    const validationError = validateCartPayload({
+      productId,
+      quantity,
+      color,
+      size,
+    });
+    if (validationError) {
+      return res.status(400).json({ message: validationError });
+    }
+
+    const normalizedQuantity = Number(quantity);
+    const normalizedSize = Number(size);
+
     // ... (Toàn bộ phần code logic gọi Axios và lưu PostgreSQL ở dưới GIỮ NGUYÊN) ...
-    const response = await axios.get(
-      `http://product-service:3002/${productId}`,
-    );
+    const response = await requestWithRetry({
+      method: "get",
+      url: `http://product-service:3002/${productId}`,
+      timeout: 4000,
+    });
     const product = response.data.data;
 
     if (!product)
       return res.status(404).json({ message: "Sản phẩm không tồn tại!" });
 
     const variant = product.variants.find(
-      (v) => v.color === color && v.size === size,
+      (v) => v.color === color && v.size === normalizedSize,
     );
 
-    if (!variant || variant.stock < quantity) {
+    if (!variant || variant.stock < normalizedQuantity) {
       return res
         .status(400)
         .json({ message: "Sản phẩm này đã hết hàng hoặc không đủ số lượng!" });
     }
 
     const finalPrice = product.salePrice ? product.salePrice : product.price;
-    const total = finalPrice * quantity;
+    const total = finalPrice * normalizedQuantity;
 
     const checkCart = await pool.query(
       "SELECT * FROM cart_items WHERE user_id = $1 AND product_id = $2 AND color = $3 AND size = $4",
-      [userId, productId, color, size],
+      [userId, productId, color, normalizedSize],
     );
 
     if (checkCart.rows.length > 0) {
       await pool.query(
         "UPDATE cart_items SET quantity = quantity + $1, total = total + $2 WHERE id = $3",
-        [quantity, total, checkCart.rows[0].id],
+        [normalizedQuantity, total, checkCart.rows[0].id],
       );
     } else {
       await pool.query(
@@ -242,8 +354,8 @@ app.post("/cart/add", verifyToken, async (req, res) => {
           product.name,
           finalPrice,
           color,
-          size,
-          quantity,
+          normalizedSize,
+          normalizedQuantity,
           total,
         ],
       );
@@ -255,8 +367,8 @@ app.post("/cart/add", verifyToken, async (req, res) => {
         productName: product.name,
         price: finalPrice,
         color,
-        size,
-        quantity,
+        size: normalizedSize,
+        quantity: normalizedQuantity,
         total,
       },
     });
@@ -320,9 +432,14 @@ app.get("/cart", verifyToken, async (req, res) => {
 app.put("/cart/update", verifyToken, async (req, res) => {
   try {
     const userId = req.user.id;
-    const { cartItemId, newQuantity } = req.body; // Nhận ID của dòng trong giỏ hàng và số lượng mới
+    const { cartItemId, quantity } = req.body;
+    const normalizedQuantity = Number(quantity);
 
-    if (newQuantity <= 0) {
+    if (!Number.isInteger(Number(cartItemId)) || Number(cartItemId) <= 0) {
+      return res.status(400).json({ message: "cartItemId không hợp lệ." });
+    }
+
+    if (!Number.isInteger(normalizedQuantity) || normalizedQuantity <= 0) {
       return res
         .status(400)
         .json({
@@ -334,7 +451,7 @@ app.put("/cart/update", verifyToken, async (req, res) => {
     // 1. Tìm sản phẩm trong giỏ xem có tồn tại không
     const cartItemResult = await pool.query(
       "SELECT * FROM cart_items WHERE id = $1 AND user_id = $2",
-      [cartItemId, userId],
+      [Number(cartItemId), userId],
     );
 
     if (cartItemResult.rows.length === 0) {
@@ -345,15 +462,17 @@ app.put("/cart/update", verifyToken, async (req, res) => {
     const item = cartItemResult.rows[0];
 
     // 2. GỌI ĐIỆN KIỂM TRA KHO (Tránh việc khách tăng số lượng lố hàng tồn kho)
-    const response = await axios.get(
-      `http://product-service:3002/${item.product_id}`,
-    );
+    const response = await requestWithRetry({
+      method: "get",
+      url: `http://product-service:3002/${item.product_id}`,
+      timeout: 4000,
+    });
     const product = response.data.data;
     const variant = product.variants.find(
       (v) => v.color === item.color && v.size === item.size,
     );
 
-    if (!variant || variant.stock < newQuantity) {
+    if (!variant || variant.stock < normalizedQuantity) {
       return res
         .status(400)
         .json({
@@ -362,15 +481,72 @@ app.put("/cart/update", verifyToken, async (req, res) => {
     }
 
     // 3. Cập nhật Database (Tính lại tổng tiền cho món đó)
-    const newTotal = item.price * newQuantity;
+    const newTotal = item.price * normalizedQuantity;
     await pool.query(
       "UPDATE cart_items SET quantity = $1, total = $2 WHERE id = $3",
-      [newQuantity, newTotal, cartItemId],
+      [normalizedQuantity, newTotal, Number(cartItemId)],
     );
 
     res.status(200).json({ message: "Cập nhật số lượng thành công!" });
   } catch (err) {
     console.error("Lỗi API Update Cart:", err.message);
+    res.status(500).json({ message: "Lỗi máy chủ nội bộ" });
+  }
+});
+
+app.put("/profile", verifyToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { full_name } = req.body;
+
+    if (!full_name || String(full_name).trim().length < 2) {
+      return res.status(400).json({ message: "Họ tên phải có ít nhất 2 ký tự." });
+    }
+
+    const result = await pool.query(
+      "UPDATE users SET full_name = $1 WHERE id = $2 RETURNING id, email, full_name, created_at",
+      [String(full_name).trim(), userId],
+    );
+
+    res.status(200).json({
+      message: "Cập nhật hồ sơ thành công!",
+      data: result.rows[0],
+    });
+  } catch (err) {
+    console.error("Lỗi API Update Profile:", err.message);
+    res.status(500).json({ message: "Lỗi máy chủ nội bộ" });
+  }
+});
+
+app.put("/change-password", verifyToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: "Vui lòng nhập mật khẩu hiện tại và mật khẩu mới." });
+    }
+
+    if (String(newPassword).length < 6) {
+      return res.status(400).json({ message: "Mật khẩu mới phải có ít nhất 6 ký tự." });
+    }
+
+    const userResult = await pool.query("SELECT password FROM users WHERE id = $1", [userId]);
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ message: "Không tìm thấy người dùng." });
+    }
+
+    const isMatch = await bcrypt.compare(currentPassword, userResult.rows[0].password);
+    if (!isMatch) {
+      return res.status(400).json({ message: "Mật khẩu hiện tại không đúng." });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await pool.query("UPDATE users SET password = $1 WHERE id = $2", [hashedPassword, userId]);
+
+    res.status(200).json({ message: "Đổi mật khẩu thành công!" });
+  } catch (err) {
+    console.error("Lỗi API Change Password:", err.message);
     res.status(500).json({ message: "Lỗi máy chủ nội bộ" });
   }
 });

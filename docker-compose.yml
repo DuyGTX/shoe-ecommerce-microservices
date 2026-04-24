@@ -1,21 +1,25 @@
-version: '3.8'
-
 services:
   # ==========================================
-  # 1. DATABASE
+  # 1. DATA & MESSAGE BROKER
   # ==========================================
   postgres-db:
     image: postgres:15-alpine
     container_name: shoe_postgres
     restart: always
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: password123
-      POSTGRES_DB: shoe_user_db
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: postgres
     ports:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./db-init/01-init-databases.sql:/docker-entrypoint-initdb.d/01-init-databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   mongo-db:
     image: mongo:6
@@ -25,6 +29,36 @@ services:
       - "27017:27017"
     volumes:
       - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand({ ping: 1 }).ok' | grep 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis-cache:
+    image: redis:alpine
+    container_name: shoe_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: shoe_rabbitmq
+    restart: always
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # ==========================================
   # 2. MICROSERVICES
@@ -32,50 +66,103 @@ services:
   api-gateway:
     build: ./api-gateway
     container_name: shoe_api_gateway
+    restart: always
     ports:
       - "8000:8000"
     depends_on:
-      - user-service
-      - product-service
-      - order-service
+      user-service:
+        condition: service_healthy
+      product-service:
+        condition: service_healthy
+      order-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8000/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   user-service:
     build: ./user-service
     container_name: shoe_user_service
+    restart: always
     ports:
       - "3001:3001"
+    env_file:
+      - ./user-service/.env
     environment:
+      - PORT=${USER_SERVICE_PORT:-3001}
+      - DB_USER=${POSTGRES_USER}
       - DB_HOST=postgres-db
+      - DB_NAME=${USER_DB_NAME:-shoe_user_db}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
       - DB_PORT=5432
+      - JWT_SECRET=${JWT_SECRET}
+      - RABBITMQ_URL=amqp://rabbitmq:5672
     depends_on:
-      - postgres-db
+      postgres-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3001/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   product-service:
     build: ./product-service
     container_name: shoe_product_service
+    restart: always
     ports:
       - "3002:3002"
+    env_file:
+      - ./product-service/.env
     environment:
+      - PORT=${PRODUCT_SERVICE_PORT:-3002}
       - MONGO_URL=mongodb://mongo-db:27017/shoe_product_db
       - MONGO_URI=mongodb://mongo-db:27017/shoe_product_db
+      - REDIS_URL=redis://redis-cache:6379
+      - ADMIN_SECRET=${ADMIN_SECRET}
     depends_on:
-      - mongo-db
+      mongo-db:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3002/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   order-service:
     build: ./order-service
     container_name: shoe_order_service
+    restart: always
     ports:
       - "3003:3003"
+    env_file:
+      - ./order-service/.env
     environment:
+      - PORT=${ORDER_SERVICE_PORT:-3003}
+      - DB_USER=${POSTGRES_USER}
       - DB_HOST=postgres-db
+      - DB_NAME=${ORDER_DB_NAME:-shoe_order_db}
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
       - DB_PORT=5432
+      - JWT_SECRET=${JWT_SECRET}
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - ADMIN_SECRET=${ADMIN_SECRET}
     depends_on:
-      - postgres-db
-  redis-cache:
-    image: redis:alpine
-    container_name: shoe_redis
-    ports:
-      - "6379:6379"
+      postgres-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3003/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
 # ==========================================
 # 3. VOLUMES

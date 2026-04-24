@@ -4,6 +4,7 @@ node_modules/
 # Bỏ qua các file bảo mật
 .env
 .env.*
+!.env.example
 
 # Bỏ qua log
 npm-debug.logv
