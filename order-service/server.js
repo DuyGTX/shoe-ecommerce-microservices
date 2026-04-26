@@ -10,6 +10,21 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+const log = (level, message, extra = {}) => {
+  console.log(JSON.stringify({
+    level,
+    service: "order-service",
+    message,
+    timestamp: new Date().toISOString(),
+    ...extra,
+  }));
+};
+
+const metrics = {
+  requestCount: 0,
+  totalLatencyMs: 0,
+};
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const requestWithRetry = async (config, options = {}) => {
   const retries = options.retries ?? 3;
@@ -33,13 +48,40 @@ const requestWithRetry = async (config, options = {}) => {
 initDB();
 let rabbitChannel;
 const ADMIN_SECRET = process.env.ADMIN_SECRET;
+const INTERNAL_SERVICE_TOKEN = process.env.INTERNAL_SERVICE_TOKEN;
+const JWT_SECRET_CURRENT = process.env.JWT_SECRET_CURRENT || process.env.JWT_SECRET;
+const JWT_SECRET_PREVIOUS = process.env.JWT_SECRET_PREVIOUS;
+
+app.use((req, res, next) => {
+  const startedAt = Date.now();
+  req.requestId = req.headers["x-request-id"] || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  res.setHeader("x-request-id", req.requestId);
+
+  res.on("finish", () => {
+    const latencyMs = Date.now() - startedAt;
+    metrics.requestCount += 1;
+    metrics.totalLatencyMs += latencyMs;
+    log("info", "request_completed", {
+      requestId: req.requestId,
+      method: req.method,
+      path: req.originalUrl,
+      statusCode: res.statusCode,
+      latencyMs,
+    });
+  });
+
+  next();
+});
 
 const requireAdmin = (req, res, next) => {
-  if (!ADMIN_SECRET) {
-    return res.status(500).json({ message: "Thiếu cấu hình ADMIN_SECRET!" });
+  const hasAdminSecret = Boolean(ADMIN_SECRET) && req.headers["x-admin-secret"] === ADMIN_SECRET;
+  const hasInternalToken = Boolean(INTERNAL_SERVICE_TOKEN) && req.headers["x-internal-token"] === INTERNAL_SERVICE_TOKEN;
+
+  if (!ADMIN_SECRET && !INTERNAL_SERVICE_TOKEN) {
+    return res.status(500).json({ message: "Thiếu cấu hình ADMIN_SECRET hoặc INTERNAL_SERVICE_TOKEN!" });
   }
 
-  if (req.headers["x-admin-secret"] !== ADMIN_SECRET) {
+  if (!hasAdminSecret && !hasInternalToken) {
     return res.status(403).json({ message: "Bạn không có quyền truy cập tài nguyên này!" });
   }
 
@@ -93,12 +135,28 @@ app.get("/health", async (req, res) => {
   }
 });
 
+app.get("/metrics", (req, res) => {
+  const avgLatency = metrics.requestCount === 0 ? 0 : Number((metrics.totalLatencyMs / metrics.requestCount).toFixed(2));
+  res.status(200).json({
+    service: "order-service",
+    requestCount: metrics.requestCount,
+    avgLatencyMs: avgLatency,
+  });
+});
+
 // Middleware Bảo Vệ
 const verifyToken = (req, res, next) => {
   const token = req.headers["authorization"]?.split(" ")[1];
   if (!token) return res.status(403).json({ message: "Từ chối truy cập!" });
   try {
-    req.user = jwt.verify(token, process.env.JWT_SECRET);
+    try {
+      req.user = jwt.verify(token, JWT_SECRET_CURRENT);
+    } catch (primaryError) {
+      if (!JWT_SECRET_PREVIOUS) {
+        throw primaryError;
+      }
+      req.user = jwt.verify(token, JWT_SECRET_PREVIOUS);
+    }
     req.tokenString = token; // Lưu lại chuỗi token để lát nữa Order Service dùng đi gọi cửa Service khác
     next();
   } catch (err) {
@@ -113,6 +171,28 @@ app.post("/checkout", verifyToken, async (req, res) => {
 
   try {
     const userId = req.user.id;
+    const idempotencyKey = req.headers["x-idempotency-key"];
+
+    if (!idempotencyKey || String(idempotencyKey).trim().length < 8) {
+      client.release();
+      return res.status(400).json({ message: "Thiếu hoặc sai định dạng x-idempotency-key." });
+    }
+
+    const existingOrder = await pool.query(
+      "SELECT id, total_amount, status FROM orders WHERE user_id = $1 AND idempotency_key = $2 LIMIT 1",
+      [userId, String(idempotencyKey).trim()],
+    );
+    if (existingOrder.rows.length > 0) {
+      client.release();
+      return res.status(200).json({
+        message: "Yêu cầu checkout đã được xử lý trước đó.",
+        orderId: existingOrder.rows[0].id,
+        totalPaid: existingOrder.rows[0].total_amount,
+        status: existingOrder.rows[0].status,
+        idempotentReplay: true,
+      });
+    }
+
     const config = { headers: { Authorization: `Bearer ${req.tokenString}` } };
 
     // 1. NHẤC MÁY GỌI USER SERVICE: "Lấy cho tôi giỏ hàng của sếp lớn!"
@@ -136,8 +216,8 @@ app.post("/checkout", verifyToken, async (req, res) => {
     // 2. LƯU VÀO DATABASE ĐƠN HÀNG
     // 2a. Tạo vỏ đơn hàng
     const newOrder = await client.query(
-      "INSERT INTO orders (user_id, total_amount, status) VALUES ($1, $2, $3) RETURNING id",
-      [userId, grandTotal, "Pending"],
+      "INSERT INTO orders (user_id, idempotency_key, total_amount, status) VALUES ($1, $2, $3, $4) RETURNING id",
+      [userId, String(idempotencyKey).trim(), grandTotal, "Pending"],
     );
     const orderId = newOrder.rows[0].id;
 

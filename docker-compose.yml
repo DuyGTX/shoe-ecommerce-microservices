@@ -8,10 +8,8 @@ services:
     restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: postgres
-    ports:
-      - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./db-init/01-init-databases.sql:/docker-entrypoint-initdb.d/01-init-databases.sql:ro
@@ -25,8 +23,6 @@ services:
     image: mongo:6
     container_name: shoe_mongo
     restart: always
-    ports:
-      - "27017:27017"
     volumes:
       - mongo_data:/data/db
     healthcheck:
@@ -39,8 +35,6 @@ services:
     image: redis:alpine
     container_name: shoe_redis
     restart: always
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -51,9 +45,6 @@ services:
     image: rabbitmq:3-management
     container_name: shoe_rabbitmq
     restart: always
-    ports:
-      - "5672:5672"
-      - "15672:15672"
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "ping"]
       interval: 10s
@@ -86,8 +77,6 @@ services:
     build: ./user-service
     container_name: shoe_user_service
     restart: always
-    ports:
-      - "3001:3001"
     env_file:
       - ./user-service/.env
     environment:
@@ -95,9 +84,9 @@ services:
       - DB_USER=${POSTGRES_USER}
       - DB_HOST=postgres-db
       - DB_NAME=${USER_DB_NAME:-shoe_user_db}
-      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       - DB_PORT=5432
-      - JWT_SECRET=${JWT_SECRET}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
       - RABBITMQ_URL=amqp://rabbitmq:5672
     depends_on:
       postgres-db:
@@ -114,8 +103,6 @@ services:
     build: ./product-service
     container_name: shoe_product_service
     restart: always
-    ports:
-      - "3002:3002"
     env_file:
       - ./product-service/.env
     environment:
@@ -123,7 +110,7 @@ services:
       - MONGO_URL=mongodb://mongo-db:27017/shoe_product_db
       - MONGO_URI=mongodb://mongo-db:27017/shoe_product_db
       - REDIS_URL=redis://redis-cache:6379
-      - ADMIN_SECRET=${ADMIN_SECRET}
+      - ADMIN_SECRET=${ADMIN_SECRET:?ADMIN_SECRET is required}
     depends_on:
       mongo-db:
         condition: service_healthy
@@ -139,8 +126,6 @@ services:
     build: ./order-service
     container_name: shoe_order_service
     restart: always
-    ports:
-      - "3003:3003"
     env_file:
       - ./order-service/.env
     environment:
@@ -148,11 +133,11 @@ services:
       - DB_USER=${POSTGRES_USER}
       - DB_HOST=postgres-db
       - DB_NAME=${ORDER_DB_NAME:-shoe_order_db}
-      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       - DB_PORT=5432
-      - JWT_SECRET=${JWT_SECRET}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
       - RABBITMQ_URL=amqp://rabbitmq:5672
-      - ADMIN_SECRET=${ADMIN_SECRET}
+      - ADMIN_SECRET=${ADMIN_SECRET:?ADMIN_SECRET is required}
     depends_on:
       postgres-db:
         condition: service_healthy

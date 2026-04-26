@@ -3,7 +3,6 @@ const cors = require('cors');
 const mongoose = require('mongoose');
 const multer = require('multer');
 const { v2: cloudinary } = require('cloudinary');
-const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const redis = require('redis'); // <--- [THÊM MỚI] Import thư viện Redis
 require('dotenv').config();
 
@@ -11,17 +10,37 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+const log = (level, message, extra = {}) => {
+    const payload = {
+        level,
+        service: 'product-service',
+        message,
+        timestamp: new Date().toISOString(),
+        ...extra,
+    };
+    console.log(JSON.stringify(payload));
+};
+
+const metrics = {
+    requestCount: 0,
+    totalLatencyMs: 0,
+};
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const ADMIN_SECRET = process.env.ADMIN_SECRET;
+const INTERNAL_SERVICE_TOKEN = process.env.INTERNAL_SERVICE_TOKEN;
 const REDIS_URL = process.env.REDIS_URL || 'redis://redis-cache:6379';
 
 const requireAdmin = (req, res, next) => {
-    if (!ADMIN_SECRET) {
-        return res.status(500).json({ message: 'Thiếu cấu hình ADMIN_SECRET.' });
+    const hasAdminSecret = Boolean(ADMIN_SECRET) && req.headers['x-admin-secret'] === ADMIN_SECRET;
+    const hasInternalToken = Boolean(INTERNAL_SERVICE_TOKEN) && req.headers['x-internal-token'] === INTERNAL_SERVICE_TOKEN;
+
+    if (!ADMIN_SECRET && !INTERNAL_SERVICE_TOKEN) {
+        return res.status(500).json({ message: 'Thiếu cấu hình ADMIN_SECRET hoặc INTERNAL_SERVICE_TOKEN.' });
     }
 
-    if (req.headers['x-admin-secret'] !== ADMIN_SECRET) {
+    if (!hasAdminSecret && !hasInternalToken) {
         return res.status(403).json({ message: 'Bạn không có quyền thao tác tài nguyên này.' });
     }
 
@@ -60,14 +79,24 @@ cloudinary.config({
     api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-const storage = new CloudinaryStorage({
-    cloudinary: cloudinary,
-    params: {
-        folder: 'shoe_ecommerce_products', 
-        allowed_formats: ['jpg', 'png', 'jpeg'],
-    },
+const upload = multer({ storage: multer.memoryStorage() });
+
+const uploadImageToCloudinary = (buffer) => new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+        {
+            folder: 'shoe_ecommerce_products',
+            resource_type: 'image',
+        },
+        (error, result) => {
+            if (error) {
+                return reject(error);
+            }
+            return resolve(result);
+        },
+    );
+
+    stream.end(buffer);
 });
-const upload = multer({ storage: storage });
 
 // [THÊM MỚI] Khởi tạo kết nối Redis
 // Trỏ đến tên container 'redis-cache' trong docker-compose.yml
@@ -101,6 +130,27 @@ const connectRedisWithRetry = async () => {
 
 connectMongoWithRetry();
 connectRedisWithRetry();
+
+app.use((req, res, next) => {
+    const startedAt = Date.now();
+    req.requestId = req.headers['x-request-id'] || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    res.setHeader('x-request-id', req.requestId);
+
+    res.on('finish', () => {
+        const latencyMs = Date.now() - startedAt;
+        metrics.requestCount += 1;
+        metrics.totalLatencyMs += latencyMs;
+        log('info', 'request_completed', {
+            requestId: req.requestId,
+            method: req.method,
+            path: req.originalUrl,
+            statusCode: res.statusCode,
+            latencyMs,
+        });
+    });
+
+    next();
+});
 
 // ---------------------------------------------------------
 // 2. ĐỊNH NGHĨA KHUÔN MẪU SẢN PHẨM (GIÀY)
@@ -142,10 +192,20 @@ app.get('/health', (req, res) => {
     });
 });
 
-app.post('/upload-image', upload.single('image'), (req, res) => {
+app.get('/metrics', (req, res) => {
+    const avgLatency = metrics.requestCount === 0 ? 0 : Number((metrics.totalLatencyMs / metrics.requestCount).toFixed(2));
+    res.status(200).json({
+        service: 'product-service',
+        requestCount: metrics.requestCount,
+        avgLatencyMs: avgLatency,
+    });
+});
+
+app.post('/upload-image', requireAdmin, upload.single('image'), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ message: 'Vui lòng chọn ảnh!' });
-        res.status(200).json({ message: 'Upload thành công!', imageUrl: req.file.path });
+        const uploaded = await uploadImageToCloudinary(req.file.buffer);
+        res.status(200).json({ message: 'Upload thành công!', imageUrl: uploaded.secure_url });
     } catch (err) {
         res.status(500).json({ message: 'Lỗi upload ảnh', error: err.message });
     }

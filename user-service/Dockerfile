@@ -1,5 +1,5 @@
 # 1. Tải môi trường Node.js siêu nhẹ
-FROM node:18-alpine
+FROM node:20-alpine
 
 # 2. Tạo thư mục làm việc trong Container
 WORKDIR /app

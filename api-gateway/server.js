@@ -1,10 +1,37 @@
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const axios = require('axios');
 const swaggerUi = require('swagger-ui-express');
 const swaggerDocs = require('./swagger');
 const app = express();
+
+const allowedOrigins = (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+const corsOptions = {
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+            return callback(null, true);
+        }
+        return callback(new Error('Origin not allowed by CORS policy'));
+    }
+};
+
+const apiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: Number(process.env.RATE_LIMIT_MAX || 120),
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: {
+        code: 'RATE_LIMITED',
+        message: 'Too many requests. Please try again later.'
+    }
+});
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const requestWithRetry = async (config, options = {}) => {
@@ -35,7 +62,14 @@ const probeService = async (name, url) => {
     }
 };
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
-app.use(cors());
+app.use(helmet());
+app.use(cors(corsOptions));
+app.use((req, res, next) => {
+    req.requestId = req.headers['x-request-id'] || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    res.setHeader('x-request-id', req.requestId);
+    next();
+});
+app.use('/api', apiLimiter);
 
 /**
  * @swagger
@@ -285,7 +319,7 @@ app.use('/api/products', createProxyMiddleware({
 // =========================================================
 // 2. NHÓM CUSTOM ROUTE (PHẢI CÓ express.json Ở ĐÂY ĐỂ ĐỌC BODY)
 // =========================================================
-app.use(express.json()); // <-- Lính canh bắt đầu đứng từ đây!
+app.use(express.json({ limit: '1mb' })); // <-- Lính canh bắt đầu đứng từ đây!
 
 app.get('/health', async (req, res) => {
     const checks = await Promise.all([

@@ -16,10 +16,18 @@ const initDB = async () => {
             CREATE TABLE IF NOT EXISTS orders (
                 id SERIAL PRIMARY KEY,
                 user_id INTEGER NOT NULL,
+                idempotency_key VARCHAR(255),
                 total_amount INTEGER NOT NULL,
                 status VARCHAR(50) DEFAULT 'Pending',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+        `);
+
+        await pool.query("ALTER TABLE orders ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(255)");
+        await pool.query(`
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_user_idempotency
+            ON orders (user_id, idempotency_key)
+            WHERE idempotency_key IS NOT NULL
         `);
 
         // Bảng 2: Chi tiết từng món trong đơn hàng
