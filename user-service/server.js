@@ -13,6 +13,21 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+const log = (level, message, extra = {}) => {
+  console.log(JSON.stringify({
+    level,
+    service: "user-service",
+    message,
+    timestamp: new Date().toISOString(),
+    ...extra,
+  }));
+};
+
+const metrics = {
+  requestCount: 0,
+  totalLatencyMs: 0,
+};
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const requestWithRetry = async (config, options = {}) => {
   const retries = options.retries ?? 3;
@@ -31,6 +46,15 @@ const requestWithRetry = async (config, options = {}) => {
   }
 
   throw lastError;
+};
+
+const withRequestIdHeader = (req, config = {}) => {
+  const merged = { ...config };
+  merged.headers = {
+    ...(config.headers || {}),
+    ...(req.requestId ? { "x-request-id": req.requestId } : {}),
+  };
+  return merged;
 };
 
 const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
@@ -91,6 +115,27 @@ const initUsersTable = async () => {
   }
 };
 initUsersTable();
+
+app.use((req, res, next) => {
+  const startedAt = Date.now();
+  req.requestId = req.headers["x-request-id"] || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  res.setHeader("x-request-id", req.requestId);
+
+  res.on("finish", () => {
+    const latencyMs = Date.now() - startedAt;
+    metrics.requestCount += 1;
+    metrics.totalLatencyMs += latencyMs;
+    log("info", "request_completed", {
+      requestId: req.requestId,
+      method: req.method,
+      path: req.originalUrl,
+      statusCode: res.statusCode,
+      latencyMs,
+    });
+  });
+
+  next();
+});
 // ---------------------------------------------------------
 // LÍNH GÁC RABBITMQ (Lắng nghe tin nhắn xóa giỏ hàng)
 // ---------------------------------------------------------
@@ -172,6 +217,15 @@ app.get("/health", async (req, res) => {
       error: err.message,
     });
   }
+});
+
+app.get("/metrics", (req, res) => {
+  const avgLatency = metrics.requestCount === 0 ? 0 : Number((metrics.totalLatencyMs / metrics.requestCount).toFixed(2));
+  res.status(200).json({
+    service: "user-service",
+    requestCount: metrics.requestCount,
+    avgLatencyMs: avgLatency,
+  });
 });
 
 // API 2: Đăng ký tài khoản (Sign Up)
@@ -314,6 +368,7 @@ app.post("/cart/add", verifyToken, async (req, res) => {
     const response = await requestWithRetry({
       method: "get",
       url: `http://product-service:3002/${productId}`,
+      ...withRequestIdHeader(req),
       timeout: 4000,
     });
     const product = response.data.data;
@@ -465,6 +520,7 @@ app.put("/cart/update", verifyToken, async (req, res) => {
     const response = await requestWithRetry({
       method: "get",
       url: `http://product-service:3002/${item.product_id}`,
+      ...withRequestIdHeader(req),
       timeout: 4000,
     });
     const product = response.data.data;

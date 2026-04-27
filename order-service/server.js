@@ -197,7 +197,12 @@ app.post("/checkout", verifyToken, async (req, res) => {
       return res.status(200).json(existingPayload);
     }
 
-    const config = { headers: { Authorization: `Bearer ${req.tokenString}` } };
+    const config = {
+      headers: {
+        Authorization: `Bearer ${req.tokenString}`,
+        "x-request-id": req.requestId,
+      },
+    };
 
     // 1. NHẤC MÁY GỌI USER SERVICE: "Lấy cho tôi giỏ hàng của sếp lớn!"
     const cartResponse = await requestWithRetry({

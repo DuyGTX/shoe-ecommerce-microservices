@@ -9,8 +9,27 @@ const swaggerDocs = require('./swagger');
 const app = express();
 const INTERNAL_SERVICE_TOKEN = process.env.INTERNAL_SERVICE_TOKEN;
 
+const log = (level, message, extra = {}) => {
+    console.log(JSON.stringify({
+        level,
+        service: 'api-gateway',
+        message,
+        timestamp: new Date().toISOString(),
+        ...extra
+    }));
+};
+
+const metrics = {
+    requestCount: 0,
+    totalLatencyMs: 0
+};
+
 const buildServiceHeaders = (req, options = {}) => {
     const headers = {};
+
+    if (req.requestId) {
+        headers['x-request-id'] = req.requestId;
+    }
 
     if (options.forwardAuthorization && req.headers.authorization) {
         headers.Authorization = req.headers.authorization;
@@ -80,8 +99,23 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
 app.use(helmet());
 app.use(cors(corsOptions));
 app.use((req, res, next) => {
+    const startedAt = Date.now();
     req.requestId = req.headers['x-request-id'] || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     res.setHeader('x-request-id', req.requestId);
+
+    res.on('finish', () => {
+        const latencyMs = Date.now() - startedAt;
+        metrics.requestCount += 1;
+        metrics.totalLatencyMs += latencyMs;
+        log('info', 'request_completed', {
+            requestId: req.requestId,
+            method: req.method,
+            path: req.originalUrl,
+            statusCode: res.statusCode,
+            latencyMs
+        });
+    });
+
     next();
 });
 app.use('/api', apiLimiter);
@@ -320,14 +354,20 @@ app.use('/api', apiLimiter);
 app.use('/api/users', createProxyMiddleware({ 
     target: 'http://user-service:3001', 
     changeOrigin: true,
-    pathRewrite: { '^/api/users': '' } 
+    pathRewrite: { '^/api/users': '' },
+    onProxyReq: (proxyReq, req) => {
+        proxyReq.setHeader('x-request-id', req.requestId || req.headers['x-request-id'] || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+    }
 }));
 
 // Chuyển hướng sang Product Service (Cổng 3002)
 app.use('/api/products', createProxyMiddleware({ 
     target: 'http://product-service:3002', 
     changeOrigin: true,
-    pathRewrite: { '^/api/products': '' } 
+    pathRewrite: { '^/api/products': '' },
+    onProxyReq: (proxyReq, req) => {
+        proxyReq.setHeader('x-request-id', req.requestId || req.headers['x-request-id'] || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+    }
 }));
 
 
@@ -348,6 +388,15 @@ app.get('/health', async (req, res) => {
         service: 'api-gateway',
         status: hasFailure ? 'degraded' : 'ok',
         checks
+    });
+});
+
+app.get('/metrics', (req, res) => {
+    const avgLatency = metrics.requestCount === 0 ? 0 : Number((metrics.totalLatencyMs / metrics.requestCount).toFixed(2));
+    res.status(200).json({
+        service: 'api-gateway',
+        requestCount: metrics.requestCount,
+        avgLatencyMs: avgLatency
     });
 });
 
