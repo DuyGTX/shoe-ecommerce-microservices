@@ -58,6 +58,8 @@ services:
     build: ./api-gateway
     container_name: shoe_api_gateway
     restart: always
+    environment:
+      - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:?INTERNAL_SERVICE_TOKEN is required}
     ports:
       - "8000:8000"
     depends_on:
@@ -111,6 +113,7 @@ services:
       - MONGO_URI=mongodb://mongo-db:27017/shoe_product_db
       - REDIS_URL=redis://redis-cache:6379
       - ADMIN_SECRET=${ADMIN_SECRET:?ADMIN_SECRET is required}
+      - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:?INTERNAL_SERVICE_TOKEN is required}
     depends_on:
       mongo-db:
         condition: service_healthy
@@ -138,6 +141,7 @@ services:
       - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
       - RABBITMQ_URL=amqp://rabbitmq:5672
       - ADMIN_SECRET=${ADMIN_SECRET:?ADMIN_SECRET is required}
+      - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:?INTERNAL_SERVICE_TOKEN is required}
     depends_on:
       postgres-db:
         condition: service_healthy

@@ -7,6 +7,21 @@ const axios = require('axios');
 const swaggerUi = require('swagger-ui-express');
 const swaggerDocs = require('./swagger');
 const app = express();
+const INTERNAL_SERVICE_TOKEN = process.env.INTERNAL_SERVICE_TOKEN;
+
+const buildServiceHeaders = (req, options = {}) => {
+    const headers = {};
+
+    if (options.forwardAuthorization && req.headers.authorization) {
+        headers.Authorization = req.headers.authorization;
+    }
+
+    if (INTERNAL_SERVICE_TOKEN) {
+        headers['x-internal-token'] = INTERNAL_SERVICE_TOKEN;
+    }
+
+    return headers;
+};
 
 const allowedOrigins = (process.env.CORS_ORIGINS || '')
     .split(',')
@@ -341,7 +356,7 @@ app.post('/api/cart/add', async (req, res) => {
     try {
         // CỰC KỲ QUAN TRỌNG: Phải copy cái Token từ Gateway đưa sang User Service
         const config = {
-            headers: { Authorization: req.headers.authorization } 
+            headers: buildServiceHeaders(req, { forwardAuthorization: true })
         };
         
         const response = await requestWithRetry({ method: 'post', url: 'http://user-service:3001/cart/add', data: req.body, ...config, timeout: 4000 });
@@ -355,7 +370,7 @@ app.get('/api/cart', async (req, res) => {
     try {
         // Bắt buộc phải bê theo Token từ khách hàng chuyển sang cho User Service
         const config = {
-            headers: { Authorization: req.headers.authorization } 
+            headers: buildServiceHeaders(req, { forwardAuthorization: true })
         };
         
         const response = await requestWithRetry({ method: 'get', url: 'http://user-service:3001/cart', ...config, timeout: 4000 });
@@ -367,7 +382,7 @@ app.get('/api/cart', async (req, res) => {
 // Chuyển hướng Cập nhật Giỏ hàng
 app.put('/api/cart/update', async (req, res) => {
     try {
-        const config = { headers: { Authorization: req.headers.authorization } };
+        const config = { headers: buildServiceHeaders(req, { forwardAuthorization: true }) };
         const response = await requestWithRetry({ method: 'put', url: 'http://user-service:3001/cart/update', data: req.body, ...config, timeout: 4000 });
         res.status(response.status).json(response.data);
     } catch (err) {
@@ -378,7 +393,7 @@ app.put('/api/cart/update', async (req, res) => {
 // Chuyển hướng Xóa sản phẩm khỏi Giỏ hàng
 app.delete('/api/cart/remove/:cartItemId', async (req, res) => {
     try {
-        const config = { headers: { Authorization: req.headers.authorization } };
+        const config = { headers: buildServiceHeaders(req, { forwardAuthorization: true }) };
         const response = await requestWithRetry({ method: 'delete', url: `http://user-service:3001/cart/remove/${req.params.cartItemId}`, ...config, timeout: 4000 });
         res.status(response.status).json(response.data);
     } catch (err) {
@@ -388,7 +403,12 @@ app.delete('/api/cart/remove/:cartItemId', async (req, res) => {
 // Chuyển hướng Checkout (Thanh toán) sang Order Service (Cổng 3003)
 app.post('/api/orders/checkout', async (req, res) => {
     try {
-        const config = { headers: { Authorization: req.headers.authorization } };
+        const config = {
+            headers: {
+                ...buildServiceHeaders(req, { forwardAuthorization: true }),
+                'x-idempotency-key': req.headers['x-idempotency-key']
+            }
+        };
         // GỌI SANG 3003 NHÉ!
         const response = await requestWithRetry({ method: 'post', url: 'http://order-service:3003/checkout', data: {}, ...config, timeout: 5000 });
         res.status(response.status).json(response.data);
@@ -400,7 +420,7 @@ app.post('/api/orders/checkout', async (req, res) => {
 app.get('/api/orders/history', async (req, res) => {
     try {
         // Gắn Token vào xe chở hàng
-        const config = { headers: { Authorization: req.headers.authorization } };
+        const config = { headers: buildServiceHeaders(req, { forwardAuthorization: true }) };
         
         // Gọi sang 3003 lấy dữ liệu
         const response = await requestWithRetry({ method: 'get', url: 'http://order-service:3003/history', ...config, timeout: 5000 });
