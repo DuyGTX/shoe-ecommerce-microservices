@@ -27,6 +27,7 @@ jobs:
             echo "POSTGRES_PASSWORD=ci-password"
             echo "JWT_SECRET=ci-jwt-secret"
             echo "ADMIN_SECRET=ci-admin-secret"
+            echo "INTERNAL_SERVICE_TOKEN=ci-internal-token"
             echo "USER_DB_NAME=shoe_user_db"
             echo "ORDER_DB_NAME=shoe_order_db"
             echo "USER_SERVICE_PORT=3001"

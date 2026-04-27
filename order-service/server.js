@@ -165,29 +165,36 @@ const verifyToken = (req, res, next) => {
 app.post("/checkout", verifyToken, async (req, res) => {
   const client = await pool.connect();
   let transactionStarted = false;
+  const replayByKey = async (userId, key) => {
+    const replay = await pool.query(
+      "SELECT id, total_amount, status FROM orders WHERE user_id = $1 AND idempotency_key = $2 LIMIT 1",
+      [userId, key],
+    );
+    if (replay.rows.length === 0) {
+      return null;
+    }
+    return {
+      message: "Yêu cầu checkout đã được xử lý trước đó.",
+      orderId: replay.rows[0].id,
+      totalPaid: replay.rows[0].total_amount,
+      status: replay.rows[0].status,
+      idempotentReplay: true,
+    };
+  };
 
   try {
     const userId = req.user.id;
-    const idempotencyKey = req.headers["x-idempotency-key"];
+    const idempotencyKey = String(req.headers["x-idempotency-key"] || "").trim();
 
-    if (!idempotencyKey || String(idempotencyKey).trim().length < 8) {
+    if (!idempotencyKey || idempotencyKey.length < 8) {
       client.release();
       return res.status(400).json({ message: "Thiếu hoặc sai định dạng x-idempotency-key." });
     }
 
-    const existingOrder = await pool.query(
-      "SELECT id, total_amount, status FROM orders WHERE user_id = $1 AND idempotency_key = $2 LIMIT 1",
-      [userId, String(idempotencyKey).trim()],
-    );
-    if (existingOrder.rows.length > 0) {
+    const existingPayload = await replayByKey(userId, idempotencyKey);
+    if (existingPayload) {
       client.release();
-      return res.status(200).json({
-        message: "Yêu cầu checkout đã được xử lý trước đó.",
-        orderId: existingOrder.rows[0].id,
-        totalPaid: existingOrder.rows[0].total_amount,
-        status: existingOrder.rows[0].status,
-        idempotentReplay: true,
-      });
+      return res.status(200).json(existingPayload);
     }
 
     const config = { headers: { Authorization: `Bearer ${req.tokenString}` } };
@@ -214,7 +221,7 @@ app.post("/checkout", verifyToken, async (req, res) => {
     // 2a. Tạo vỏ đơn hàng
     const newOrder = await client.query(
       "INSERT INTO orders (user_id, idempotency_key, total_amount, status) VALUES ($1, $2, $3, $4) RETURNING id",
-      [userId, String(idempotencyKey).trim(), grandTotal, "Pending"],
+      [userId, idempotencyKey, grandTotal, "Pending"],
     );
     const orderId = newOrder.rows[0].id;
 
@@ -266,6 +273,23 @@ app.post("/checkout", verifyToken, async (req, res) => {
       status: "QueuedForCartClear",
     });
   } catch (err) {
+    if (err.code === "23505") {
+      const replayPayload = await pool.query(
+        "SELECT id, total_amount, status FROM orders WHERE user_id = $1 AND idempotency_key = $2 LIMIT 1",
+        [req.user.id, String(req.headers["x-idempotency-key"] || "").trim()],
+      );
+      client.release();
+      if (replayPayload.rows.length > 0) {
+        return res.status(200).json({
+          message: "Yêu cầu checkout đã được xử lý trước đó.",
+          orderId: replayPayload.rows[0].id,
+          totalPaid: replayPayload.rows[0].total_amount,
+          status: replayPayload.rows[0].status,
+          idempotentReplay: true,
+        });
+      }
+    }
+
     if (transactionStarted) {
       await client.query("ROLLBACK");
     }
