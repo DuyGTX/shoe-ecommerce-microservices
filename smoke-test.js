@@ -7,6 +7,8 @@ const baseUrls = {
 };
 
 const timeoutMs = Number(process.env.SMOKE_TIMEOUT_MS || 4000);
+const checkoutReplayWaitMs = Number(process.env.SMOKE_CHECKOUT_REPLAY_WAIT_MS || 300);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const randomEmail = () => `qa_${Date.now()}_${Math.random().toString(36).slice(2, 8)}@test.local`;
 
@@ -28,6 +30,17 @@ const withTimeout = async (url, options = {}) => {
   }
 };
 
+const assertStatus = ({ name, response, expected, failedRef }) => {
+  const ok = expected.includes(response.status);
+  if (!ok) {
+    failedRef.count += 1;
+  }
+  console.log(
+    `${ok ? "PASS" : "FAIL"} | ${name} | status=${response.status} | expected=${expected.join(",")}`,
+  );
+  return ok;
+};
+
 const testCases = [
   { name: "gateway health", url: `${baseUrls.gateway}/health`, expected: [200, 503] },
   { name: "user-service health", url: `${baseUrls.user}/health`, expected: [200, 503] },
@@ -40,7 +53,7 @@ const testCases = [
 
 const run = async () => {
   console.log("Running smoke tests...");
-  let failed = 0;
+  const failedRef = { count: 0 };
 
   for (const testCase of testCases) {
     try {
@@ -49,22 +62,15 @@ const run = async () => {
         headers: { "Content-Type": "application/json" },
         body: testCase.body ? JSON.stringify(testCase.body) : undefined,
       });
-
-      const ok = testCase.expected.includes(response.status);
-      if (!ok) {
-        failed += 1;
-      }
-
-      console.log(
-        `${ok ? "PASS" : "FAIL"} | ${testCase.name} | status=${response.status} | expected=${testCase.expected.join(",")}`,
-      );
+      assertStatus({ name: testCase.name, response, expected: testCase.expected, failedRef });
     } catch (error) {
-      failed += 1;
+      failedRef.count += 1;
       console.log(`FAIL | ${testCase.name} | error=${error.message}`);
     }
   }
 
   try {
+    console.log("Running E2E flow: Register -> Login -> Cart -> Checkout -> History...");
     const email = randomEmail();
     const password = "12345678";
 
@@ -73,9 +79,14 @@ const run = async () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password, full_name: "QA Retry" }),
     });
-    if (registerRes.status !== 201) {
-      failed += 1;
-      console.log(`FAIL | checkout retry setup register | status=${registerRes.status} | expected=201`);
+    const registerOk = assertStatus({
+      name: "e2e register",
+      response: registerRes,
+      expected: [201],
+      failedRef,
+    });
+    if (!registerOk) {
+      throw new Error("e2e register failed");
     }
 
     const loginRes = await withTimeout(`${baseUrls.gateway}/api/users/login`, {
@@ -86,8 +97,11 @@ const run = async () => {
     const loginBody = await parseJsonSafe(loginRes);
     const token = loginBody.token;
     if (loginRes.status !== 200 || !token) {
-      failed += 1;
+      failedRef.count += 1;
       console.log(`FAIL | checkout retry setup login | status=${loginRes.status} | expected=200`);
+      throw new Error("e2e login failed");
+    } else {
+      console.log("PASS | e2e login | token acquired");
     }
 
     const productsRes = await withTimeout(`${baseUrls.gateway}/api/products/all`);
@@ -96,7 +110,7 @@ const run = async () => {
     const firstVariant = firstProduct?.variants?.[0];
 
     if (!firstProduct || !firstVariant) {
-      failed += 1;
+      failedRef.count += 1;
       console.log("FAIL | checkout retry setup product seed | reason=no product/variant available");
     } else {
       const addCartRes = await withTimeout(`${baseUrls.gateway}/api/cart/add`, {
@@ -112,9 +126,29 @@ const run = async () => {
           size: firstVariant.size,
         }),
       });
-      if (addCartRes.status !== 200) {
-        failed += 1;
-        console.log(`FAIL | checkout retry setup add cart | status=${addCartRes.status} | expected=200`);
+      const addCartOk = assertStatus({
+        name: "e2e add to cart",
+        response: addCartRes,
+        expected: [200],
+        failedRef,
+      });
+      if (!addCartOk) {
+        throw new Error("e2e add to cart failed");
+      }
+
+      const cartRes = await withTimeout(`${baseUrls.gateway}/api/cart`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const cartBody = await parseJsonSafe(cartRes);
+      const cartHasItems = cartRes.status === 200 && Number(cartBody.totalItems || 0) > 0;
+      if (!cartHasItems) {
+        failedRef.count += 1;
+        console.log(`FAIL | e2e cart view | status=${cartRes.status} | expected=200 with totalItems>0`);
+        throw new Error("e2e cart view failed");
+      } else {
+        console.log(`PASS | e2e cart view | totalItems=${cartBody.totalItems}`);
       }
 
       const idempotencyKey = `idem-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -130,6 +164,8 @@ const run = async () => {
       });
       const firstCheckoutBody = await parseJsonSafe(firstCheckoutRes);
 
+      await sleep(checkoutReplayWaitMs);
+
       const secondCheckoutRes = await withTimeout(`${baseUrls.gateway}/api/orders/checkout`, {
         method: "POST",
         headers: checkoutHeaders,
@@ -142,17 +178,35 @@ const run = async () => {
         && secondCheckoutBody.orderId === firstCheckoutBody.orderId;
 
       if (!firstOk) {
-        failed += 1;
+        failedRef.count += 1;
         console.log(`FAIL | checkout first submit | status=${firstCheckoutRes.status} | expected=200/202 with orderId`);
+        throw new Error("e2e first checkout failed");
       } else {
         console.log(`PASS | checkout first submit | status=${firstCheckoutRes.status}`);
       }
 
       if (!secondOk) {
-        failed += 1;
+        failedRef.count += 1;
         console.log(`FAIL | checkout idempotent replay | status=${secondCheckoutRes.status} | expected=200 with idempotentReplay=true and same orderId`);
+        throw new Error("idempotency replay failed");
       } else {
         console.log("PASS | checkout idempotent replay | second request returned replay=true with same orderId");
+      }
+
+      const historyRes = await withTimeout(`${baseUrls.gateway}/api/orders/history`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const historyBody = await parseJsonSafe(historyRes);
+      const historyOk = historyRes.status === 200
+        && Array.isArray(historyBody.data)
+        && historyBody.data.some((order) => Number(order.id) === Number(firstCheckoutBody.orderId));
+      if (!historyOk) {
+        failedRef.count += 1;
+        console.log(`FAIL | e2e order history | status=${historyRes.status} | expected=200 with created order`);
+      } else {
+        console.log("PASS | e2e order history | created order found");
       }
 
       const missingKeyRes = await withTimeout(`${baseUrls.gateway}/api/orders/checkout`, {
@@ -163,19 +217,19 @@ const run = async () => {
         },
       });
       if (missingKeyRes.status !== 400) {
-        failed += 1;
+        failedRef.count += 1;
         console.log(`FAIL | checkout missing idempotency key | status=${missingKeyRes.status} | expected=400`);
       } else {
         console.log("PASS | checkout missing idempotency key | status=400");
       }
     }
   } catch (error) {
-    failed += 1;
+    failedRef.count += 1;
     console.log(`FAIL | checkout retry integration | error=${error.message}`);
   }
 
-  if (failed > 0) {
-    console.error(`Smoke test completed with ${failed} failure(s).`);
+  if (failedRef.count > 0) {
+    console.error(`Smoke test completed with ${failedRef.count} failure(s).`);
     process.exit(1);
   }
 
