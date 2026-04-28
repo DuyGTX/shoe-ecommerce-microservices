@@ -7,6 +7,7 @@ const axios = require("axios");
 require("dotenv").config();
 
 const { pool } = require("./db");
+const { register, httpRequestDurationSeconds, httpRequestsTotal } = require("./metrics");
 
 const app = express();
 app.use(cors());
@@ -20,11 +21,6 @@ const log = (level, message, extra = {}) => {
     timestamp: new Date().toISOString(),
     ...extra,
   }));
-};
-
-const metrics = {
-  requestCount: 0,
-  totalLatencyMs: 0,
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -132,14 +128,17 @@ const validateCartPayload = ({ productId, quantity, color, size }) => {
 const CLEAR_CART_MAX_RETRIES = 3;
 
 app.use((req, res, next) => {
-  const startedAt = Date.now();
+  const startedAt = process.hrtime.bigint();
   req.requestId = req.headers["x-request-id"] || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   res.setHeader("x-request-id", req.requestId);
 
   res.on("finish", () => {
-    const latencyMs = Date.now() - startedAt;
-    metrics.requestCount += 1;
-    metrics.totalLatencyMs += latencyMs;
+    const durationSeconds = Number(process.hrtime.bigint() - startedAt) / 1e9;
+    const latencyMs = Math.round(durationSeconds * 1000);
+    const route = req.route?.path || req.baseUrl || req.path || "unknown";
+    const labels = { method: req.method, route, status_code: String(res.statusCode) };
+    httpRequestDurationSeconds.observe(labels, durationSeconds);
+    httpRequestsTotal.inc(labels);
     log("info", "request_completed", {
       requestId: req.requestId,
       method: req.method,
@@ -150,6 +149,11 @@ app.use((req, res, next) => {
   });
 
   next();
+});
+
+app.get("/metrics", async (req, res) => {
+  res.set("Content-Type", register.contentType);
+  res.end(await register.metrics());
 });
 // ---------------------------------------------------------
 // LÍNH GÁC RABBITMQ (Lắng nghe tin nhắn xóa giỏ hàng)
@@ -254,15 +258,6 @@ app.get("/health", async (req, res) => {
       error: err.message,
     });
   }
-});
-
-app.get("/metrics", (req, res) => {
-  const avgLatency = metrics.requestCount === 0 ? 0 : Number((metrics.totalLatencyMs / metrics.requestCount).toFixed(2));
-  res.status(200).json({
-    service: "user-service",
-    requestCount: metrics.requestCount,
-    avgLatencyMs: avgLatency,
-  });
 });
 
 // API 2: Đăng ký tài khoản (Sign Up)

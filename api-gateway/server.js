@@ -6,6 +6,7 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 const axios = require('axios');
 const swaggerUi = require('swagger-ui-express');
 const swaggerDocs = require('./swagger');
+const { register, httpRequestDurationSeconds, httpRequestsTotal } = require('./metrics');
 const app = express();
 const INTERNAL_SERVICE_TOKEN = process.env.INTERNAL_SERVICE_TOKEN;
 
@@ -17,11 +18,6 @@ const log = (level, message, extra = {}) => {
         timestamp: new Date().toISOString(),
         ...extra
     }));
-};
-
-const metrics = {
-    requestCount: 0,
-    totalLatencyMs: 0
 };
 
 const buildServiceHeaders = (req, options = {}) => {
@@ -138,14 +134,17 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
 app.use(helmet());
 app.use(cors(corsOptions));
 app.use((req, res, next) => {
-    const startedAt = Date.now();
+    const startedAt = process.hrtime.bigint();
     req.requestId = req.headers['x-request-id'] || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     res.setHeader('x-request-id', req.requestId);
 
     res.on('finish', () => {
-        const latencyMs = Date.now() - startedAt;
-        metrics.requestCount += 1;
-        metrics.totalLatencyMs += latencyMs;
+        const durationSeconds = Number(process.hrtime.bigint() - startedAt) / 1e9;
+        const latencyMs = Math.round(durationSeconds * 1000);
+        const route = req.route?.path || req.baseUrl || req.path || 'unknown';
+        const labels = { method: req.method, route, status_code: String(res.statusCode) };
+        httpRequestDurationSeconds.observe(labels, durationSeconds);
+        httpRequestsTotal.inc(labels);
         log('info', 'request_completed', {
             requestId: req.requestId,
             method: req.method,
@@ -158,6 +157,11 @@ app.use((req, res, next) => {
     next();
 });
 app.use('/api', apiLimiter);
+
+app.get('/metrics', async (req, res) => {
+    res.set('Content-Type', register.contentType);
+    res.end(await register.metrics());
+});
 
 /**
  * @swagger
@@ -442,15 +446,6 @@ app.get('/health', async (req, res) => {
         service: 'api-gateway',
         status: hasFailure ? 'degraded' : 'ok',
         checks
-    });
-});
-
-app.get('/metrics', (req, res) => {
-    const avgLatency = metrics.requestCount === 0 ? 0 : Number((metrics.totalLatencyMs / metrics.requestCount).toFixed(2));
-    res.status(200).json({
-        service: 'api-gateway',
-        requestCount: metrics.requestCount,
-        avgLatencyMs: avgLatency
     });
 });
 

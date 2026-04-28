@@ -6,6 +6,7 @@ const { v2: cloudinary } = require('cloudinary');
 const redis = require('redis'); // <--- [THÊM MỚI] Import thư viện Redis
 const amqp = require('amqplib');
 require('dotenv').config();
+const { register, httpRequestDurationSeconds, httpRequestsTotal } = require('./metrics');
 
 const app = express();
 app.use(cors());
@@ -20,11 +21,6 @@ const log = (level, message, extra = {}) => {
         ...extra,
     };
     console.log(JSON.stringify(payload));
-};
-
-const metrics = {
-    requestCount: 0,
-    totalLatencyMs: 0,
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -369,14 +365,17 @@ connectRedisWithRetry();
 connectRabbitMQ();
 
 app.use((req, res, next) => {
-    const startedAt = Date.now();
+    const startedAt = process.hrtime.bigint();
     req.requestId = req.headers['x-request-id'] || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     res.setHeader('x-request-id', req.requestId);
 
     res.on('finish', () => {
-        const latencyMs = Date.now() - startedAt;
-        metrics.requestCount += 1;
-        metrics.totalLatencyMs += latencyMs;
+        const durationSeconds = Number(process.hrtime.bigint() - startedAt) / 1e9;
+        const latencyMs = Math.round(durationSeconds * 1000);
+        const route = req.route?.path || req.baseUrl || req.path || 'unknown';
+        const labels = { method: req.method, route, status_code: String(res.statusCode) };
+        httpRequestDurationSeconds.observe(labels, durationSeconds);
+        httpRequestsTotal.inc(labels);
         log('info', 'request_completed', {
             requestId: req.requestId,
             method: req.method,
@@ -387,6 +386,11 @@ app.use((req, res, next) => {
     });
 
     next();
+});
+
+app.get('/metrics', async (req, res) => {
+    res.set('Content-Type', register.contentType);
+    res.end(await register.metrics());
 });
 
 // ---------------------------------------------------------
@@ -438,15 +442,6 @@ app.get('/health', (req, res) => {
             redis: redisReady ? 'up' : 'down',
             rabbitmq: rabbitReady ? 'up' : 'down'
         }
-    });
-});
-
-app.get('/metrics', (req, res) => {
-    const avgLatency = metrics.requestCount === 0 ? 0 : Number((metrics.totalLatencyMs / metrics.requestCount).toFixed(2));
-    res.status(200).json({
-        service: 'product-service',
-        requestCount: metrics.requestCount,
-        avgLatencyMs: avgLatency,
     });
 });
 
