@@ -6,8 +6,7 @@ const jwt = require("jsonwebtoken");
 const axios = require("axios");
 require("dotenv").config();
 
-// Lấy pool và initDB từ file db.js
-const { pool, initDB } = require("./db");
+const { pool } = require("./db");
 
 const app = express();
 app.use(cors());
@@ -90,31 +89,6 @@ const validateCartPayload = ({ productId, quantity, color, size }) => {
 
   return null;
 };
-
-// ---------------------------------------------------------
-// 1. TỰ ĐỘNG TẠO BẢNG DATABASE
-// ---------------------------------------------------------
-// Gọi hàm tạo bảng cart_items (từ db.js)
-initDB();
-
-// Tự động tạo thêm bảng users (nếu chưa có)
-const initUsersTable = async () => {
-  try {
-    await pool.query(`
-            CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
-                email VARCHAR(255) UNIQUE NOT NULL,
-                password VARCHAR(255) NOT NULL,
-                full_name VARCHAR(255) NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        `);
-    console.log("📦 Bảng [users] trong PostgreSQL đã sẵn sàng!");
-  } catch (err) {
-    console.error("❌ Lỗi tạo bảng users:", err);
-  }
-};
-initUsersTable();
 
 app.use((req, res, next) => {
   const startedAt = Date.now();

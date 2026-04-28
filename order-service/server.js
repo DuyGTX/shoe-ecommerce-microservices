@@ -4,7 +4,7 @@ const cors = require("cors");
 const axios = require("axios");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
-const { pool, initDB } = require("./db");
+const { pool } = require("./db");
 
 const app = express();
 app.use(cors());
@@ -45,7 +45,6 @@ const requestWithRetry = async (config, options = {}) => {
   throw lastError;
 };
 
-initDB();
 let rabbitChannel;
 const ADMIN_SECRET = process.env.ADMIN_SECRET;
 const INTERNAL_SERVICE_TOKEN = process.env.INTERNAL_SERVICE_TOKEN;
