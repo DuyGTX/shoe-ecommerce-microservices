@@ -106,8 +106,20 @@ const expireOrder = async (orderId) => {
 
 const reserveOrderStock = async ({ orderId, items = [] }) => {
     const session = await mongoose.startSession();
+    let alreadyProcessed = false;
     try {
         await session.withTransaction(async () => {
+            try {
+                await InventoryLog.create([{ orderId: String(orderId), action: 'RESERVE_STOCK', items }], { session });
+            } catch (err) {
+                if (err.code === 11000) {
+                    alreadyProcessed = true;
+                    log('info', 'stock_reservation_transaction_committed', { orderId, status: 'COMMITTED', idempotentReplay: true });
+                    return;
+                }
+                throw err;
+            }
+
             for (const item of items) {
                 const result = await Product.updateOne(
                     {
@@ -130,6 +142,8 @@ const reserveOrderStock = async ({ orderId, items = [] }) => {
             }
         });
 
+        if (alreadyProcessed) return;
+
         await clearProductCache();
         publishStockEvent('stock.reserved', { orderId });
         publishStockHolding({
@@ -141,8 +155,10 @@ const reserveOrderStock = async ({ orderId, items = [] }) => {
                 quantity: Number(item.quantity),
             })),
         });
+        log('info', 'stock_reservation_transaction_committed', { orderId, status: 'COMMITTED', itemCount: items.length });
         log('info', 'stock_reserved', { orderId, itemCount: items.length });
     } catch (err) {
+        log('warn', 'stock_reservation_transaction_aborted', { orderId, status: 'ABORTED', reason: err.message });
         publishStockEvent('stock.failed', { orderId, reason: err.message });
         log('warn', 'stock_reservation_failed', { orderId, reason: err.message });
     } finally {
@@ -193,8 +209,13 @@ const releaseExpiredStock = async ({ orderId, items = [] }) => {
             }
         });
 
+        log('info', 'stock_release_transaction_committed', { orderId, status: 'COMMITTED', itemCount: items.length });
+
         await clearProductCache();
         if (order.status === 'PENDING') await expireOrder(orderId);
+    } catch (err) {
+        log('warn', 'stock_release_transaction_aborted', { orderId, status: 'ABORTED', reason: err.message });
+        throw err;
     } finally {
         await session.endSession();
     }
@@ -393,10 +414,12 @@ const Product = mongoose.model('Product', productSchema);
 
 const inventoryLogSchema = new mongoose.Schema({
     orderId: { type: String, required: true },
-    action: { type: String, required: true, enum: ['RELEASE_EXPIRED_STOCK'] },
+    action: { type: String, required: true, enum: ['RESERVE_STOCK', 'RELEASE_EXPIRED_STOCK'] },
     items: [{ productId: String, color: String, size: Number, quantity: Number }],
+    createdAt: { type: Date, default: Date.now },
 }, { timestamps: true });
 inventoryLogSchema.index({ orderId: 1, action: 1 }, { unique: true });
+inventoryLogSchema.index({ createdAt: 1 }, { expireAfterSeconds: 2592000 });
 const InventoryLog = mongoose.model('InventoryLog', inventoryLogSchema);
 
 // ---------------------------------------------------------

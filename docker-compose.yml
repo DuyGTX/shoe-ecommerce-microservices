@@ -23,6 +23,7 @@ services:
     image: mongo:6
     container_name: shoe_mongo
     restart: always
+    command: ["mongod", "--replSet", "rs0", "--bind_ip_all"]
     volumes:
       - mongo_data:/data/db
     healthcheck:
@@ -30,6 +31,34 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  mongo-init:
+    image: mongo:6
+    container_name: shoe_mongo_init
+    restart: "no"
+    depends_on:
+      mongo-db:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - |
+        mongosh --host mongo-db:27017 --quiet --eval '
+          try {
+            const status = rs.status();
+            if (status.ok === 1) quit(0);
+          } catch (err) {
+            rs.initiate({_id: "rs0", members: [{_id: 0, host: "mongo-db:27017"}]});
+          }
+          let ready = false;
+          for (let i = 0; i < 30; i++) {
+            try {
+              if (rs.status().myState === 1) { ready = true; break; }
+            } catch (err) {}
+            sleep(1000);
+          }
+          if (!ready) throw new Error("Replica set rs0 is not primary yet");
+        '
 
   redis-cache:
     image: redis:alpine
@@ -111,15 +140,15 @@ services:
       - ./product-service/.env
     environment:
       - PORT=${PRODUCT_SERVICE_PORT:-3002}
-      - MONGO_URL=mongodb://mongo-db:27017/shoe_product_db
-      - MONGO_URI=mongodb://mongo-db:27017/shoe_product_db
+      - MONGO_URL=mongodb://mongo-db:27017/shoe_product_db?replicaSet=rs0
+      - MONGO_URI=mongodb://mongo-db:27017/shoe_product_db?replicaSet=rs0
       - REDIS_URL=redis://redis-cache:6379
       - RABBITMQ_URL=amqp://rabbitmq:5672
       - ADMIN_SECRET=${ADMIN_SECRET:?ADMIN_SECRET is required}
       - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:?INTERNAL_SERVICE_TOKEN is required}
     depends_on:
-      mongo-db:
-        condition: service_healthy
+      mongo-init:
+        condition: service_completed_successfully
       redis-cache:
         condition: service_healthy
       rabbitmq:
