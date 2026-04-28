@@ -409,6 +409,21 @@ app.use('/api/products', createProxyMiddleware({
     }
 }));
 
+// Expose internal service health checks through the gateway only.
+app.get('/api/orders/health', async (req, res) => {
+    try {
+        const response = await requestWithRetry({
+            method: 'get',
+            url: 'http://order-service:3003/health',
+            headers: buildServiceHeaders(req),
+            timeout: 1500
+        }, { retries: 2, delayMs: 200 });
+        res.status(response.status).json(response.data);
+    } catch (err) {
+        res.status(err.response?.status || 503).json(err.response?.data || { message: 'Order health check failed' });
+    }
+});
+
 
 // =========================================================
 // 2. NHÓM CUSTOM ROUTE (PHẢI CÓ express.json Ở ĐÂY ĐỂ ĐỌC BODY)

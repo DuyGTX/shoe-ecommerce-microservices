@@ -253,6 +253,52 @@ app.get("/metrics", (req, res) => {
   });
 });
 
+app.get("/internal/orders/:orderId", requireAdmin, async (req, res) => {
+  try {
+    const orderId = Number(req.params.orderId);
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({ message: "orderId không hợp lệ!" });
+    }
+
+    const orderResult = await pool.query("SELECT * FROM orders WHERE id = $1", [orderId]);
+    if (orderResult.rows.length === 0) {
+      return res.status(404).json({ message: "Không tìm thấy đơn hàng!" });
+    }
+
+    const itemsResult = await pool.query("SELECT * FROM order_items WHERE order_id = $1", [orderId]);
+    return res.status(200).json({
+      message: "Lấy thông tin đơn hàng nội bộ thành công!",
+      data: { ...orderResult.rows[0], items: itemsResult.rows },
+    });
+  } catch (err) {
+    log("error", "internal_order_detail_failed", { error: err.message });
+    return res.status(500).json({ message: "Lỗi khi lấy thông tin đơn hàng!" });
+  }
+});
+
+app.patch("/internal/orders/:orderId/expire", requireAdmin, async (req, res) => {
+  try {
+    const orderId = Number(req.params.orderId);
+    if (!Number.isInteger(orderId) || orderId <= 0) {
+      return res.status(400).json({ message: "orderId không hợp lệ!" });
+    }
+
+    const result = await pool.query(
+      "UPDATE orders SET status = $1 WHERE id = $2 AND status IN ($3, $4) RETURNING *",
+      ["EXPIRED", orderId, "PENDING", "CANCELLED"],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(409).json({ message: "Đơn hàng không còn ở trạng thái có thể hết hạn." });
+    }
+
+    return res.status(200).json({ message: "Đơn hàng đã hết hạn thanh toán.", data: result.rows[0] });
+  } catch (err) {
+    log("error", "internal_order_expire_failed", { error: err.message });
+    return res.status(500).json({ message: "Lỗi khi cập nhật đơn hàng hết hạn!" });
+  }
+});
+
 // Middleware Bảo Vệ
 const verifyToken = (req, res, next) => {
   const token = req.headers["authorization"]?.split(" ")[1];
@@ -418,7 +464,7 @@ app.patch("/:orderId/status", requireAdmin, async (req, res) => {
   try {
     const orderId = Number(req.params.orderId);
     const { status } = req.body;
-    const allowedStatuses = ["PENDING", "CONFIRMED", "PAID", "CANCELLED", "Delivered"];
+    const allowedStatuses = ["PENDING", "CONFIRMED", "PAID", "CANCELLED", "EXPIRED", "Delivered"];
 
     if (!Number.isInteger(orderId) || orderId <= 0) {
       return res.status(400).json({ message: "orderId không hợp lệ!" });
