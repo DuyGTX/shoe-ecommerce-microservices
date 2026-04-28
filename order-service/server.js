@@ -85,6 +85,10 @@ const requestWithRetry = async (config, options = {}) => {
 };
 
 let rabbitChannel;
+const ORDER_EVENTS_EXCHANGE = "order_events";
+const STOCK_EVENTS_EXCHANGE = "stock_events";
+const STOCK_RESERVED_QUEUE = "order_stock_reserved_queue";
+const STOCK_FAILED_QUEUE = "order_stock_failed_queue";
 const ADMIN_SECRET = process.env.ADMIN_SECRET;
 const INTERNAL_SERVICE_TOKEN = process.env.INTERNAL_SERVICE_TOKEN;
 const JWT_SECRET_CURRENT = process.env.JWT_SECRET_CURRENT || process.env.JWT_SECRET;
@@ -136,14 +140,84 @@ const connectRabbitMQ = async () => {
       await sleep(3000);
       connectRabbitMQ();
     });
-    // Đảm bảo hòm thư tên là 'clear_cart_queue' luôn tồn tại
-    await rabbitChannel.assertQueue("clear_cart_queue", { durable: true });
+    await rabbitChannel.assertExchange(ORDER_EVENTS_EXCHANGE, "topic", { durable: true });
+    await rabbitChannel.assertExchange(STOCK_EVENTS_EXCHANGE, "topic", { durable: true });
+    await rabbitChannel.assertExchange("clear_cart_dlx", "direct", { durable: true });
+    await rabbitChannel.assertQueue("clear_cart_dlq", { durable: true });
+    await rabbitChannel.bindQueue("clear_cart_dlq", "clear_cart_dlx", "clear_cart_failed");
+
+    // Main queue forwards unrecoverable cart-clear failures to the DLQ.
+    await rabbitChannel.assertQueue("clear_cart_queue_v2", {
+      durable: true,
+      arguments: { "x-dead-letter-exchange": "clear_cart_dlx" },
+    });
+
+    await rabbitChannel.assertQueue(STOCK_RESERVED_QUEUE, { durable: true });
+    await rabbitChannel.bindQueue(STOCK_RESERVED_QUEUE, STOCK_EVENTS_EXCHANGE, "stock.reserved");
+    await rabbitChannel.assertQueue(STOCK_FAILED_QUEUE, { durable: true });
+    await rabbitChannel.bindQueue(STOCK_FAILED_QUEUE, STOCK_EVENTS_EXCHANGE, "stock.failed");
+
+    await consumeStockEvents();
     console.log("🐇 Đã kết nối Bưu điện RabbitMQ thành công!");
   } catch (error) {
     console.error("❌ Lỗi kết nối RabbitMQ:", error.message);
   }
 };
 connectRabbitMQ();
+
+const publishOrderCreated = (orderId, items) => {
+  if (!rabbitChannel) return false;
+  const payload = { orderId, items };
+  return rabbitChannel.publish(
+    ORDER_EVENTS_EXCHANGE,
+    "order.created",
+    Buffer.from(JSON.stringify(payload)),
+    { persistent: true, contentType: "application/json" },
+  );
+};
+
+const publishCartClearRequested = (userId, orderId) => {
+  if (!rabbitChannel) return false;
+  const message = JSON.stringify({ userId, orderId });
+  return rabbitChannel.sendToQueue("clear_cart_queue_v2", Buffer.from(message), { persistent: true });
+};
+
+const consumeStockEvents = async () => {
+  rabbitChannel.consume(STOCK_RESERVED_QUEUE, async (msg) => {
+    if (!msg) return;
+    try {
+      const { orderId } = JSON.parse(msg.content.toString());
+      const updated = await pool.query(
+        "UPDATE orders SET status = $1 WHERE id = $2 AND status = $3 RETURNING user_id",
+        ["CONFIRMED", orderId, "PENDING"],
+      );
+      if (updated.rows.length > 0) {
+        publishCartClearRequested(updated.rows[0].user_id, orderId);
+        log("info", "stock_reserved_order_confirmed", { orderId });
+      }
+      rabbitChannel.ack(msg);
+    } catch (err) {
+      log("error", "stock_reserved_consume_failed", { error: err.message });
+      rabbitChannel.nack(msg, false, true);
+    }
+  });
+
+  rabbitChannel.consume(STOCK_FAILED_QUEUE, async (msg) => {
+    if (!msg) return;
+    try {
+      const { orderId, reason } = JSON.parse(msg.content.toString());
+      await pool.query(
+        "UPDATE orders SET status = $1 WHERE id = $2 AND status = $3",
+        ["CANCELLED", orderId, "PENDING"],
+      );
+      log("warn", "stock_failed_order_cancelled", { orderId, reason });
+      rabbitChannel.ack(msg);
+    } catch (err) {
+      log("error", "stock_failed_consume_failed", { error: err.message });
+      rabbitChannel.nack(msg, false, true);
+    }
+  });
+};
 
 app.get("/health", async (req, res) => {
   try {
@@ -264,7 +338,7 @@ app.post("/checkout", verifyToken, async (req, res) => {
     // 2a. Tạo vỏ đơn hàng
     const newOrder = await client.query(
       "INSERT INTO orders (user_id, idempotency_key, total_amount, status) VALUES ($1, $2, $3, $4) RETURNING id",
-      [userId, idempotencyKey, grandTotal, "Pending"],
+      [userId, idempotencyKey, grandTotal, "PENDING"],
     );
     const orderId = newOrder.rows[0].id;
 
@@ -286,34 +360,32 @@ app.post("/checkout", verifyToken, async (req, res) => {
       );
     }
 
-    await client.query(
-      "UPDATE orders SET status = $1 WHERE id = $2",
-      [rabbitChannel ? "QueuedForCartClear" : "AwaitingCartClear", orderId],
-    );
-
     await client.query("COMMIT");
     client.release();
 
-    // 3. GỬI THƯ BÁO XÓA GIỎ HÀNG QUA RABBITMQ (BẤT ĐỒNG BỘ)
+    const reserveItems = cartItems.map((item) => ({
+      productId: item.product_id,
+      quantity: Number(item.quantity),
+      color: item.color,
+      size: item.size,
+    }));
+
     if (!rabbitChannel) {
       return res.status(202).json({
-        message: "Đơn hàng đã được tạo, nhưng hàng đợi dọn giỏ chưa sẵn sàng.",
+        message: "Đơn hàng đã được tạo PENDING, nhưng RabbitMQ chưa sẵn sàng để giữ kho.",
         orderId: orderId,
         totalPaid: grandTotal,
-        status: "AwaitingCartClear",
+        status: "PENDING",
       });
     }
 
-    const message = JSON.stringify({ userId: userId, orderId: orderId });
-    rabbitChannel.sendToQueue("clear_cart_queue", Buffer.from(message), {
-      persistent: true,
-    });
-    console.log(`✉️ Đã gửi thư xóa giỏ hàng (Persistent) cho User: ${userId}`);
-    res.status(200).json({
-      message: "🎉 Chốt đơn thành công! (Dữ liệu đang được xử lý ngầm)",
+    publishOrderCreated(orderId, reserveItems);
+    log("info", "order_created_event_published", { orderId, items: reserveItems.length });
+    res.status(202).json({
+      message: "Đơn hàng đã được tạo PENDING, hệ thống đang giữ kho.",
       orderId: orderId,
       totalPaid: grandTotal,
-      status: "QueuedForCartClear",
+      status: "PENDING",
     });
   } catch (err) {
     if (err.code === "23505") {
@@ -346,7 +418,7 @@ app.patch("/:orderId/status", requireAdmin, async (req, res) => {
   try {
     const orderId = Number(req.params.orderId);
     const { status } = req.body;
-    const allowedStatuses = ["Pending", "QueuedForCartClear", "AwaitingCartClear", "Paid", "Cancelled", "Delivered"];
+    const allowedStatuses = ["PENDING", "CONFIRMED", "PAID", "CANCELLED", "Delivered"];
 
     if (!Number.isInteger(orderId) || orderId <= 0) {
       return res.status(400).json({ message: "orderId không hợp lệ!" });

@@ -129,6 +129,8 @@ const validateCartPayload = ({ productId, quantity, color, size }) => {
   return null;
 };
 
+const CLEAR_CART_MAX_RETRIES = 3;
+
 app.use((req, res, next) => {
   const startedAt = Date.now();
   req.requestId = req.headers["x-request-id"] || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -165,8 +167,14 @@ const consumeRabbitMQ = async () => {
       consumeRabbitMQ();
     });
     
-    // 1. Cấu hình hàng đợi với độ bền cao
-    await channel.assertQueue("clear_cart_queue", { durable: true });
+    await channel.assertExchange("clear_cart_dlx", "direct", { durable: true });
+    await channel.assertQueue("clear_cart_dlq", { durable: true });
+    await channel.bindQueue("clear_cart_dlq", "clear_cart_dlx", "clear_cart_failed");
+
+    await channel.assertQueue("clear_cart_queue_v2", {
+      durable: true,
+      arguments: { "x-dead-letter-exchange": "clear_cart_dlx" },
+    });
 
     // 2. Chỉ nhận 1 tin nhắn mỗi lần
     channel.prefetch(1);
@@ -174,7 +182,7 @@ const consumeRabbitMQ = async () => {
     console.log("📨 Đang chờ thư từ Bưu điện RabbitMQ...");
 
     channel.consume(
-      "clear_cart_queue",
+      "clear_cart_queue_v2",
       async (msg) => {
         if (msg !== null) {
           try {
@@ -190,10 +198,26 @@ const consumeRabbitMQ = async () => {
             console.log("✅ Đã dọn sạch giỏ hàng và gửi xác nhận (Ack)!");
             
           } catch (error) {
-            console.error("❌ Lỗi xử lý tin nhắn:", error.message);
+            const retryCount = Number(msg.properties.headers?.["x-retry-count"] || 0);
 
-            // THẤT BẠI: Gửi tin nhắn quay lại hàng đợi
-            channel.nack(msg, false, true);
+            if (retryCount >= CLEAR_CART_MAX_RETRIES) {
+              console.log(JSON.stringify({
+                level: "error",
+                service: "user-service",
+                message: "clear_cart_message_dead_lettered",
+                timestamp: new Date().toISOString(),
+                retryCount,
+                error: error.message,
+              }));
+              channel.nack(msg, false, false);
+              return;
+            }
+
+            channel.sendToQueue("clear_cart_queue_v2", msg.content, {
+              persistent: true,
+              headers: { ...(msg.properties.headers || {}), "x-retry-count": retryCount + 1 },
+            });
+            channel.ack(msg);
           }
         }
       },

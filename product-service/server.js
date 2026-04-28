@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const multer = require('multer');
 const { v2: cloudinary } = require('cloudinary');
 const redis = require('redis'); // <--- [THÊM MỚI] Import thư viện Redis
+const amqp = require('amqplib');
 require('dotenv').config();
 
 const app = express();
@@ -31,6 +32,11 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const ADMIN_SECRET = process.env.ADMIN_SECRET;
 const INTERNAL_SERVICE_TOKEN = process.env.INTERNAL_SERVICE_TOKEN;
 const REDIS_URL = process.env.REDIS_URL || 'redis://redis-cache:6379';
+const RABBITMQ_URL = process.env.RABBITMQ_URL;
+const ORDER_EVENTS_EXCHANGE = 'order_events';
+const STOCK_EVENTS_EXCHANGE = 'stock_events';
+const ORDER_CREATED_QUEUE = 'product_order_created_queue';
+let rabbitChannel;
 
 const requireAdmin = (req, res, next) => {
     if (!INTERNAL_SERVICE_TOKEN) {
@@ -46,6 +52,96 @@ const requireAdmin = (req, res, next) => {
 
 const clearProductCache = async () => {
     await redisClient.del('products_all');
+};
+
+const publishStockEvent = (routingKey, payload) => {
+    if (!rabbitChannel) return false;
+    return rabbitChannel.publish(
+        STOCK_EVENTS_EXCHANGE,
+        routingKey,
+        Buffer.from(JSON.stringify(payload)),
+        { persistent: true, contentType: 'application/json' },
+    );
+};
+
+const reserveOrderStock = async ({ orderId, items = [] }) => {
+    const session = await mongoose.startSession();
+    try {
+        await session.withTransaction(async () => {
+            for (const item of items) {
+                const result = await Product.updateOne(
+                    {
+                        _id: item.productId,
+                        variants: {
+                            $elemMatch: {
+                                color: item.color,
+                                size: Number(item.size),
+                                stock: { $gte: Number(item.quantity) },
+                            },
+                        },
+                    },
+                    { $inc: { 'variants.$.stock': -Number(item.quantity) } },
+                    { session },
+                );
+
+                if (result.modifiedCount !== 1) {
+                    throw new Error(`Không đủ tồn kho cho sản phẩm ${item.productId}`);
+                }
+            }
+        });
+
+        await clearProductCache();
+        publishStockEvent('stock.reserved', { orderId });
+        log('info', 'stock_reserved', { orderId, itemCount: items.length });
+    } catch (err) {
+        publishStockEvent('stock.failed', { orderId, reason: err.message });
+        log('warn', 'stock_reservation_failed', { orderId, reason: err.message });
+    } finally {
+        await session.endSession();
+    }
+};
+
+const connectRabbitMQ = async () => {
+    if (!RABBITMQ_URL) {
+        log('warn', 'rabbitmq_url_missing');
+        return;
+    }
+
+    try {
+        const connection = await amqp.connect(RABBITMQ_URL);
+        rabbitChannel = await connection.createChannel();
+        connection.on('error', (err) => log('error', 'rabbitmq_connection_error', { error: err.message }));
+        connection.on('close', async () => {
+            rabbitChannel = undefined;
+            log('warn', 'rabbitmq_disconnected_retrying');
+            await sleep(3000);
+            connectRabbitMQ();
+        });
+
+        await rabbitChannel.assertExchange(ORDER_EVENTS_EXCHANGE, 'topic', { durable: true });
+        await rabbitChannel.assertExchange(STOCK_EVENTS_EXCHANGE, 'topic', { durable: true });
+        await rabbitChannel.assertQueue(ORDER_CREATED_QUEUE, { durable: true });
+        await rabbitChannel.bindQueue(ORDER_CREATED_QUEUE, ORDER_EVENTS_EXCHANGE, 'order.created');
+        await rabbitChannel.prefetch(5);
+
+        rabbitChannel.consume(ORDER_CREATED_QUEUE, async (msg) => {
+            if (!msg) return;
+            try {
+                const payload = JSON.parse(msg.content.toString());
+                await reserveOrderStock(payload);
+                rabbitChannel.ack(msg);
+            } catch (err) {
+                log('error', 'order_created_consume_failed', { error: err.message });
+                rabbitChannel.nack(msg, false, true);
+            }
+        });
+
+        log('info', 'rabbitmq_connected');
+    } catch (err) {
+        log('error', 'rabbitmq_connect_failed', { error: err.message });
+        await sleep(3000);
+        connectRabbitMQ();
+    }
 };
 
 // ---------------------------------------------------------
@@ -127,6 +223,7 @@ const connectRedisWithRetry = async () => {
 
 connectMongoWithRetry();
 connectRedisWithRetry();
+connectRabbitMQ();
 
 app.use((req, res, next) => {
     const startedAt = Date.now();
@@ -178,13 +275,15 @@ const Product = mongoose.model('Product', productSchema);
 
 app.get('/health', (req, res) => {
     const mongoReady = mongoose.connection.readyState === 1;
-    const serviceReady = mongoReady && redisReady;
+    const rabbitReady = Boolean(rabbitChannel);
+    const serviceReady = mongoReady && redisReady && rabbitReady;
     res.status(serviceReady ? 200 : 503).json({
         service: 'product-service',
         status: serviceReady ? 'ok' : 'degraded',
         checks: {
             mongo: mongoReady ? 'up' : 'down',
-            redis: redisReady ? 'up' : 'down'
+            redis: redisReady ? 'up' : 'down',
+            rabbitmq: rabbitReady ? 'up' : 'down'
         }
     });
 });
