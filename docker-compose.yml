@@ -71,9 +71,10 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8000/health || exit 1"]
+      start_period: 30s
       interval: 15s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   user-service:
     build: ./user-service
@@ -97,9 +98,10 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3001/health || exit 1"]
+      start_period: 30s
       interval: 15s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   product-service:
     build: ./product-service
@@ -121,9 +123,10 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3002/health || exit 1"]
+      start_period: 45s
       interval: 15s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   order-service:
     build: ./order-service
@@ -149,9 +152,10 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3003/health || exit 1"]
+      start_period: 30s
       interval: 15s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   smoke-test:
     image: node:20-alpine
