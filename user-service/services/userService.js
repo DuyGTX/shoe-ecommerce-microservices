@@ -3,31 +3,12 @@ const jwt = require("jsonwebtoken");
 const { pool } = require("../db");
 const { requestWithRetry, withRequestIdHeader } = require("../utils/httpClient");
 
-const isValidEmail = (email) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-
-const validateRegisterInput = ({ email, password, full_name }) => {
-  if (!email || !password || !full_name) return "Vui lòng điền đầy đủ email, mật khẩu và họ tên.";
-  if (!isValidEmail(email)) return "Email không đúng định dạng.";
-  if (String(password).length < 6) return "Mật khẩu phải có ít nhất 6 ký tự.";
-  return null;
-};
-
-const validateCartPayload = ({ productId, quantity, color, size }) => {
-  if (!productId || !color || size === undefined || quantity === undefined) return "Thiếu thông tin sản phẩm cần thêm vào giỏ hàng.";
-  if (!Number.isInteger(Number(quantity)) || Number(quantity) <= 0) return "Số lượng phải là số nguyên dương.";
-  if (!Number.isInteger(Number(size)) || Number(size) <= 0) return "Size phải là số nguyên dương.";
-  return null;
-};
-
 const health = async () => {
   await pool.query("SELECT 1");
   return { service: "user-service", status: "ok", checks: { postgres: "up" } };
 };
 
 const register = async ({ email, password, full_name }) => {
-  const validationError = validateRegisterInput({ email, password, full_name });
-  if (validationError) return { status: 400, body: { message: validationError } };
-
   const userExists = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
   if (userExists.rows.length > 0) return { status: 400, body: { message: "Email này đã được sử dụng!" } };
 
@@ -42,9 +23,6 @@ const register = async ({ email, password, full_name }) => {
 };
 
 const login = async ({ email, password }) => {
-  if (!email || !password) return { status: 400, body: { message: "Email và mật khẩu là bắt buộc." } };
-  if (!isValidEmail(email)) return { status: 400, body: { message: "Email không đúng định dạng." } };
-
   const userResult = await pool.query("SELECT * FROM users WHERE email = $1", [email]);
   if (userResult.rows.length === 0) return { status: 401, body: { message: "Email hoặc mật khẩu không đúng!" } };
 
@@ -69,9 +47,6 @@ const fetchProduct = async (req, productId) => {
 const addToCart = async (req) => {
   const userId = req.user.id;
   const { productId, quantity, color, size } = req.body;
-  const validationError = validateCartPayload({ productId, quantity, color, size });
-  if (validationError) return { status: 400, body: { message: validationError } };
-
   const normalizedQuantity = Number(quantity);
   const normalizedSize = Number(size);
   const product = await fetchProduct(req, productId);
@@ -116,9 +91,6 @@ const updateCart = async (req) => {
   const { cartItemId, quantity } = req.body;
   const normalizedQuantity = Number(quantity);
 
-  if (!Number.isInteger(Number(cartItemId)) || Number(cartItemId) <= 0) return { status: 400, body: { message: "cartItemId không hợp lệ." } };
-  if (!Number.isInteger(normalizedQuantity) || normalizedQuantity <= 0) return { status: 400, body: { message: "Số lượng phải lớn hơn 0. Nếu muốn xóa, hãy dùng chức năng Xóa." } };
-
   const cartItemResult = await pool.query("SELECT * FROM cart_items WHERE id = $1 AND user_id = $2", [Number(cartItemId), userId]);
   if (cartItemResult.rows.length === 0) return { status: 404, body: { message: "Không tìm thấy sản phẩm này trong giỏ hàng!" } };
 
@@ -132,15 +104,11 @@ const updateCart = async (req) => {
 };
 
 const updateProfile = async (userId, { full_name }) => {
-  if (!full_name || String(full_name).trim().length < 2) return { status: 400, body: { message: "Họ tên phải có ít nhất 2 ký tự." } };
   const result = await pool.query("UPDATE users SET full_name = $1 WHERE id = $2 RETURNING id, email, full_name, created_at", [String(full_name).trim(), userId]);
   return { status: 200, body: { message: "Cập nhật hồ sơ thành công!", data: result.rows[0] } };
 };
 
 const changePassword = async (userId, { currentPassword, newPassword }) => {
-  if (!currentPassword || !newPassword) return { status: 400, body: { message: "Vui lòng nhập mật khẩu hiện tại và mật khẩu mới." } };
-  if (String(newPassword).length < 6) return { status: 400, body: { message: "Mật khẩu mới phải có ít nhất 6 ký tự." } };
-
   const userResult = await pool.query("SELECT password FROM users WHERE id = $1", [userId]);
   if (userResult.rows.length === 0) return { status: 404, body: { message: "Không tìm thấy người dùng." } };
   const isMatch = await bcrypt.compare(currentPassword, userResult.rows[0].password);
