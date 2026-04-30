@@ -5,7 +5,7 @@ const rateLimit = require('express-rate-limit');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const axios = require('axios');
 const swaggerUi = require('swagger-ui-express');
-const swaggerDocs = require('./swagger');
+const swaggerPortalOptions = require('./swagger');
 const { register, httpRequestDurationSeconds, httpRequestsTotal } = require('./metrics');
 const app = express();
 const INTERNAL_SERVICE_TOKEN = process.env.INTERNAL_SERVICE_TOKEN;
@@ -53,8 +53,8 @@ const corsOptions = {
 };
 
 const apiLimiter = rateLimit({
-    windowMs: 60 * 1000,
-    max: Number(process.env.RATE_LIMIT_MAX || 120),
+    windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000),
+    max: Number(process.env.RATE_LIMIT_MAX || 100),
     standardHeaders: true,
     legacyHeaders: false,
     message: {
@@ -62,6 +62,30 @@ const apiLimiter = rateLimit({
         message: 'Too many requests. Please try again later.'
     }
 });
+
+const isPrivateNetworkAddress = (ip = '') => {
+    const normalizedIp = ip.replace('::ffff:', '');
+
+    return normalizedIp === '::1'
+        || normalizedIp === '127.0.0.1'
+        || normalizedIp.startsWith('10.')
+        || normalizedIp.startsWith('192.168.')
+        || /^172\.(1[6-9]|2\d|3[0-1])\./.test(normalizedIp)
+        || normalizedIp.startsWith('fc')
+        || normalizedIp.startsWith('fd')
+        || normalizedIp.startsWith('fe80:');
+};
+
+const protectMetricsEndpoint = (req, res, next) => {
+    const remoteIp = req.ip || req.socket?.remoteAddress || '';
+
+    if (isPrivateNetworkAddress(remoteIp)) {
+        return next();
+    }
+
+    log('warn', 'metrics_access_denied', { requestId: req.requestId, remoteIp });
+    return res.status(403).json({ message: 'Metrics endpoint is only available inside the private network.' });
+};
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const circuitBreakers = new Map();
@@ -130,9 +154,32 @@ const probeService = async (name, url) => {
         return { name, status: 'down', error: error.message };
     }
 };
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
+
+const swaggerSpecTargets = {
+    'user-service': 'http://user-service:3001/swagger.json',
+    'product-service': 'http://product-service:3002/swagger.json',
+    'order-service': 'http://order-service:3003/swagger.json'
+};
+
 app.use(helmet());
 app.use(cors(corsOptions));
+
+app.get('/api-docs/specs/:service.json', async (req, res) => {
+    const targetUrl = swaggerSpecTargets[req.params.service];
+    if (!targetUrl) {
+        return res.status(404).json({ message: 'Unknown Swagger spec.' });
+    }
+
+    try {
+        const response = await requestWithRetry({ method: 'get', url: targetUrl, timeout: 2000 }, { retries: 2, delayMs: 150 });
+        res.set('Cache-Control', 'no-store');
+        return res.status(response.status).json(response.data);
+    } catch (err) {
+        return res.status(err.response?.status || 503).json({ message: 'Swagger spec unavailable', service: req.params.service });
+    }
+});
+
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(null, swaggerPortalOptions));
 app.use((req, res, next) => {
     const startedAt = process.hrtime.bigint();
     req.requestId = req.headers['x-request-id'] || `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -158,7 +205,7 @@ app.use((req, res, next) => {
 });
 app.use('/api', apiLimiter);
 
-app.get('/metrics', async (req, res) => {
+app.get('/metrics', protectMetricsEndpoint, async (req, res) => {
     res.set('Content-Type', register.contentType);
     res.end(await register.metrics());
 });

@@ -1,0 +1,16 @@
+{
+  "openapi": "3.0.0",
+  "info": { "title": "Product Service API", "version": "1.0.0", "description": "Product catalog, search, image upload and inventory-facing APIs exposed through API Gateway." },
+  "servers": [{ "url": "http://localhost:8000/api/products", "description": "API Gateway route" }],
+  "components": {
+    "securitySchemes": { "internalToken": { "type": "apiKey", "in": "header", "name": "x-internal-token" } }
+  },
+  "paths": {
+    "/health": { "get": { "summary": "Health check", "tags": ["Health"], "responses": { "200": { "description": "Service is healthy" }, "503": { "description": "Service is degraded" } } } },
+    "/all": { "get": { "summary": "List all products", "tags": ["Products"], "responses": { "200": { "description": "Product list" }, "500": { "description": "Server error" } } } },
+    "/search": { "get": { "summary": "Search products", "tags": ["Products"], "parameters": [{ "in": "query", "name": "gender", "schema": { "type": "string" } }, { "in": "query", "name": "brand", "schema": { "type": "string" } }, { "in": "query", "name": "category", "schema": { "type": "string" } }, { "in": "query", "name": "keyword", "schema": { "type": "string" } }, { "in": "query", "name": "minPrice", "schema": { "type": "number" } }, { "in": "query", "name": "maxPrice", "schema": { "type": "number" } }], "responses": { "200": { "description": "Search result" } } } },
+    "/{id}": { "get": { "summary": "Get product by id", "tags": ["Products"], "parameters": [{ "in": "path", "name": "id", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Product detail" }, "404": { "description": "Not found" } } }, "patch": { "summary": "Update product", "tags": ["Admin Products"], "security": [{ "internalToken": [] }], "parameters": [{ "in": "path", "name": "id", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Updated" }, "403": { "description": "Forbidden" } } }, "delete": { "summary": "Delete product", "tags": ["Admin Products"], "security": [{ "internalToken": [] }], "parameters": [{ "in": "path", "name": "id", "required": true, "schema": { "type": "string" } }], "responses": { "200": { "description": "Deleted" }, "403": { "description": "Forbidden" } } } },
+    "/add": { "post": { "summary": "Create product", "tags": ["Admin Products"], "security": [{ "internalToken": [] }], "responses": { "201": { "description": "Created" }, "403": { "description": "Forbidden" } } } },
+    "/upload-image": { "post": { "summary": "Upload product image", "tags": ["Admin Products"], "security": [{ "internalToken": [] }], "requestBody": { "required": true, "content": { "multipart/form-data": { "schema": { "type": "object", "required": ["image"], "properties": { "image": { "type": "string", "format": "binary" } } } } } }, "responses": { "200": { "description": "Uploaded" }, "400": { "description": "Missing file" } } } }
+  }
+}

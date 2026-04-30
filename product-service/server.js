@@ -7,6 +7,7 @@ const redis = require('redis'); // <--- [THÊM MỚI] Import thư viện Redis
 const amqp = require('amqplib');
 require('dotenv').config();
 const { register, httpRequestDurationSeconds, httpRequestsTotal } = require('./metrics');
+const openApiSpec = require('./openapi.json');
 
 const app = express();
 app.use(cors());
@@ -391,6 +392,10 @@ app.use((req, res, next) => {
 app.get('/metrics', async (req, res) => {
     res.set('Content-Type', register.contentType);
     res.end(await register.metrics());
+});
+
+app.get('/swagger.json', (req, res) => {
+    res.json(openApiSpec);
 });
 
 // ---------------------------------------------------------

@@ -8,6 +8,7 @@ require("dotenv").config();
 
 const { pool } = require("./db");
 const { register, httpRequestDurationSeconds, httpRequestsTotal } = require("./metrics");
+const openApiSpec = require("./openapi.json");
 
 const app = express();
 app.use(cors());
@@ -154,6 +155,10 @@ app.use((req, res, next) => {
 app.get("/metrics", async (req, res) => {
   res.set("Content-Type", register.contentType);
   res.end(await register.metrics());
+});
+
+app.get("/swagger.json", (req, res) => {
+  res.json(openApiSpec);
 });
 // ---------------------------------------------------------
 // LÍNH GÁC RABBITMQ (Lắng nghe tin nhắn xóa giỏ hàng)
