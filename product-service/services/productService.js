@@ -84,8 +84,8 @@ const createProductService = ({ redisClient, getRedisReady, getRabbitReady }) =>
         if (keyword) queryObj.name = { $regex: keyword, $options: 'i' };
         if (minPrice || maxPrice) {
             queryObj.price = {};
-            if (minPrice) queryObj.price.$gte = Number(minPrice);
-            if (maxPrice) queryObj.price.$lte = Number(maxPrice);
+            if (minPrice) queryObj.price.$gte = minPrice;
+            if (maxPrice) queryObj.price.$lte = maxPrice;
         }
 
         const products = await Product.find(queryObj).sort({ createdAt: -1 });
