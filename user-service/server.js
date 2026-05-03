@@ -1,6 +1,7 @@
 const amqp = require("amqplib");
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
 require("dotenv").config();
 
 const { pool } = require("./db");
@@ -10,8 +11,21 @@ const { register, httpRequestDurationSeconds, httpRequestsTotal } = require("./m
 const openApiSpec = require("./openapi.json");
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+
+const DEFAULT_ALLOWED_ORIGINS = ["http://localhost:3000", "http://localhost:5173", "http://api-gateway:3000"];
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || DEFAULT_ALLOWED_ORIGINS.join(","))
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(helmet());
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error("Not allowed by CORS"));
+  },
+}));
+app.use(express.json({ limit: "10kb" }));
 
 const log = (level, message, extra = {}) => {
   console.log(JSON.stringify({
@@ -24,6 +38,9 @@ const log = (level, message, extra = {}) => {
 };
 
 const CLEAR_CART_MAX_RETRIES = 3;
+let rabbitConnection;
+let rabbitChannel;
+let isShuttingDown = false;
 
 app.use((req, res, next) => {
   const startedAt = process.hrtime.bigint();
@@ -62,32 +79,35 @@ app.get("/swagger.json", (req, res) => {
 // ---------------------------------------------------------
 const consumeRabbitMQ = async () => {
   try {
-    const connection = await amqp.connect(process.env.RABBITMQ_URL);
-    const channel = await connection.createChannel();
-    connection.on("error", (err) => {
+    rabbitConnection = await amqp.connect(process.env.RABBITMQ_URL);
+    rabbitChannel = await rabbitConnection.createChannel();
+    rabbitConnection.on("error", (err) => {
       console.error("❌ RabbitMQ connection error:", err.message);
     });
-    connection.on("close", async () => {
+    rabbitConnection.on("close", async () => {
+      rabbitConnection = null;
+      rabbitChannel = null;
+      if (isShuttingDown) return;
       console.warn("⚠️ RabbitMQ disconnected, retrying in 3s...");
       await sleep(3000);
       consumeRabbitMQ();
     });
     
-    await channel.assertExchange("clear_cart_dlx", "direct", { durable: true });
-    await channel.assertQueue("clear_cart_dlq", { durable: true });
-    await channel.bindQueue("clear_cart_dlq", "clear_cart_dlx", "clear_cart_failed");
+    await rabbitChannel.assertExchange("clear_cart_dlx", "direct", { durable: true });
+    await rabbitChannel.assertQueue("clear_cart_dlq", { durable: true });
+    await rabbitChannel.bindQueue("clear_cart_dlq", "clear_cart_dlx", "clear_cart_failed");
 
-    await channel.assertQueue("clear_cart_queue_v2", {
+    await rabbitChannel.assertQueue("clear_cart_queue_v2", {
       durable: true,
       arguments: { "x-dead-letter-exchange": "clear_cart_dlx" },
     });
 
     // 2. Chỉ nhận 1 tin nhắn mỗi lần
-    channel.prefetch(1);
+    rabbitChannel.prefetch(1);
 
     console.log("📨 Đang chờ thư từ Bưu điện RabbitMQ...");
 
-    channel.consume(
+    rabbitChannel.consume(
       "clear_cart_queue_v2",
       async (msg) => {
         if (msg !== null) {
@@ -100,7 +120,7 @@ const consumeRabbitMQ = async () => {
             await pool.query('DELETE FROM cart_items WHERE user_id = $1', [data.userId]);
 
             // XÁC NHẬN THÀNH CÔNG: Xóa tin khỏi RabbitMQ
-            channel.ack(msg);
+            rabbitChannel.ack(msg);
             console.log("✅ Đã dọn sạch giỏ hàng và gửi xác nhận (Ack)!");
             
           } catch (error) {
@@ -115,15 +135,15 @@ const consumeRabbitMQ = async () => {
                 retryCount,
                 error: error.message,
               }));
-              channel.nack(msg, false, false);
+              rabbitChannel.nack(msg, false, false);
               return;
             }
 
-            channel.sendToQueue("clear_cart_queue_v2", msg.content, {
+            rabbitChannel.sendToQueue("clear_cart_queue_v2", msg.content, {
               persistent: true,
               headers: { ...(msg.properties.headers || {}), "x-retry-count": retryCount + 1 },
             });
-            channel.ack(msg);
+            rabbitChannel.ack(msg);
           }
         }
       },
@@ -138,6 +158,38 @@ consumeRabbitMQ();
 app.use("/", userRoutes);
 
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`🚀 User Service đang chạy tại http://localhost:${PORT}`);
 });
+
+const closeServer = () => new Promise((resolve, reject) => {
+  server.close((err) => (err ? reject(err) : resolve()));
+});
+
+const gracefulShutdown = async (signal) => {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  log("info", "graceful_shutdown_started", { signal });
+
+  const shutdownTimeout = setTimeout(() => {
+    log("error", "graceful_shutdown_timeout", { timeoutMs: 10000 });
+    process.exit(1);
+  }, 10000);
+
+  try {
+    await closeServer();
+    if (rabbitChannel) await rabbitChannel.close();
+    if (rabbitConnection) await rabbitConnection.close();
+    await pool.end();
+    clearTimeout(shutdownTimeout);
+    log("info", "graceful_shutdown_completed", { signal });
+    process.exit(0);
+  } catch (error) {
+    clearTimeout(shutdownTimeout);
+    log("error", "graceful_shutdown_failed", { signal, error: error.message });
+    process.exit(1);
+  }
+};
+
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
