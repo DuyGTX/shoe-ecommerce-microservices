@@ -33,10 +33,6 @@ const createOrderService = ({ pool, orderModel, getRabbitReady, publishOrderCrea
     },
 
     async internalOrderDetail(orderId) {
-      if (!Number.isInteger(orderId) || orderId <= 0) {
-        return { statusCode: 400, body: { message: "orderId không hợp lệ!" } };
-      }
-
       const orderResult = await orderModel.findById(orderId);
       if (orderResult.rows.length === 0) {
         return { statusCode: 404, body: { message: "Không tìm thấy đơn hàng!" } };
@@ -53,10 +49,6 @@ const createOrderService = ({ pool, orderModel, getRabbitReady, publishOrderCrea
     },
 
     async expireOrder(orderId) {
-      if (!Number.isInteger(orderId) || orderId <= 0) {
-        return { statusCode: 400, body: { message: "orderId không hợp lệ!" } };
-      }
-
       const result = await orderModel.expireOrder(orderId);
       if (result.rows.length === 0) {
         return { statusCode: 409, body: { message: "Đơn hàng không còn ở trạng thái có thể hết hạn." } };
@@ -70,11 +62,6 @@ const createOrderService = ({ pool, orderModel, getRabbitReady, publishOrderCrea
       let transactionStarted = false;
 
       try {
-        if (!idempotencyKey || idempotencyKey.length < 8) {
-          client.release();
-          return { statusCode: 400, body: { message: "Thiếu hoặc sai định dạng x-idempotency-key." } };
-        }
-
         const existingPayload = await replayByKey(userId, idempotencyKey);
         if (existingPayload) {
           client.release();
@@ -152,16 +139,6 @@ const createOrderService = ({ pool, orderModel, getRabbitReady, publishOrderCrea
     },
 
     async updateStatus(orderId, status) {
-      const allowedStatuses = ["PENDING", "CONFIRMED", "PAID", "CANCELLED", "EXPIRED", "Delivered"];
-
-      if (!Number.isInteger(orderId) || orderId <= 0) {
-        return { statusCode: 400, body: { message: "orderId không hợp lệ!" } };
-      }
-
-      if (!status || !allowedStatuses.includes(status)) {
-        return { statusCode: 400, body: { message: "Trạng thái đơn hàng không hợp lệ!" } };
-      }
-
       const result = await orderModel.updateStatus(orderId, status);
       if (result.rows.length === 0) {
         return { statusCode: 404, body: { message: "Không tìm thấy đơn hàng để cập nhật!" } };
@@ -187,10 +164,6 @@ const createOrderService = ({ pool, orderModel, getRabbitReady, publishOrderCrea
     },
 
     async detail(orderId, userId) {
-      if (!Number.isInteger(orderId) || orderId <= 0) {
-        return { statusCode: 400, body: { message: "orderId không hợp lệ!" } };
-      }
-
       const orderResult = await orderModel.findByIdAndUser(orderId, userId);
       if (orderResult.rows.length === 0) {
         return { statusCode: 404, body: { message: "Không tìm thấy đơn hàng!" } };

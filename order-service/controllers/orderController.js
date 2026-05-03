@@ -18,7 +18,7 @@ const createOrderController = ({ orderService, getRabbitReady, log }) => ({
 
   async internalOrderDetail(req, res) {
     try {
-      const result = await orderService.internalOrderDetail(Number(req.params.orderId));
+      const result = await orderService.internalOrderDetail(req.params.orderId);
       return res.status(result.statusCode).json(result.body);
     } catch (err) {
       log("error", "internal_order_detail_failed", { error: err.message });
@@ -28,7 +28,7 @@ const createOrderController = ({ orderService, getRabbitReady, log }) => ({
 
   async expireOrder(req, res) {
     try {
-      const result = await orderService.expireOrder(Number(req.params.orderId));
+      const result = await orderService.expireOrder(req.params.orderId);
       return res.status(result.statusCode).json(result.body);
     } catch (err) {
       log("error", "internal_order_expire_failed", { error: err.message });
@@ -42,7 +42,7 @@ const createOrderController = ({ orderService, getRabbitReady, log }) => ({
         userId: req.user.id,
         tokenString: req.tokenString,
         requestId: req.requestId,
-        idempotencyKey: String(req.headers["x-idempotency-key"] || "").trim(),
+        idempotencyKey: req.headers["x-idempotency-key"],
       });
       return res.status(result.statusCode).json(result.body);
     } catch (err) {
@@ -53,7 +53,7 @@ const createOrderController = ({ orderService, getRabbitReady, log }) => ({
 
   async updateStatus(req, res) {
     try {
-      const result = await orderService.updateStatus(Number(req.params.orderId), req.body.status);
+      const result = await orderService.updateStatus(req.params.orderId, req.body.status);
       return res.status(result.statusCode).json(result.body);
     } catch (err) {
       console.error("Lỗi API Update Order Status:", err.message);
@@ -73,7 +73,7 @@ const createOrderController = ({ orderService, getRabbitReady, log }) => ({
 
   async detail(req, res) {
     try {
-      const result = await orderService.detail(Number(req.params.orderId), req.user.id);
+      const result = await orderService.detail(req.params.orderId, req.user.id);
       return res.status(result.statusCode).json(result.body);
     } catch (err) {
       console.error("Lỗi API Chi tiết đơn hàng:", err.message);
