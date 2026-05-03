@@ -6,7 +6,8 @@
     "dev": "nodemon server.js",
     "migrate": "node scripts/migrate.js up",
     "migrate:down": "node scripts/migrate.js down",
-    "start": "npm run migrate && node server.js"
+    "start": "npm run migrate && node server.js",
+    "test": "jest"
   },
   "keywords": [],
   "author": "",
@@ -25,6 +26,9 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "jest": "^30.3.0",
+    "mongodb-memory-server": "^11.1.0",
+    "nodemon": "^3.1.14",
+    "supertest": "^7.2.2"
   }
 }
