@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
 const mongoose = require('mongoose');
 const { v2: cloudinary } = require('cloudinary');
 const redis = require('redis'); // <--- [THÊM MỚI] Import thư viện Redis
@@ -14,8 +15,21 @@ const { createStockService } = require('./services/stockService');
 const { createProductRoutes } = require('./routes/productRoutes');
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+
+const DEFAULT_ALLOWED_ORIGINS = ['http://localhost:3000', 'http://localhost:5173', 'http://api-gateway:3000'];
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || DEFAULT_ALLOWED_ORIGINS.join(','))
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+app.use(helmet());
+app.use(cors({
+    origin(origin, callback) {
+        if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+        return callback(new Error('Not allowed by CORS'));
+    },
+}));
+app.use(express.json({ limit: '10kb' }));
 
 const log = (level, message, extra = {}) => {
     const payload = {
@@ -30,7 +44,9 @@ const log = (level, message, extra = {}) => {
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://redis-cache:6379';
 const RABBITMQ_URL = process.env.RABBITMQ_URL;
+let rabbitConnection;
 let rabbitChannel;
+let isShuttingDown = false;
 
 // ---------------------------------------------------------
 // 1. KẾT NỐI DB, CLOUDINARY & REDIS
@@ -112,16 +128,18 @@ const connectRabbitMQ = async () => {
     }
 
     try {
-        const connection = await amqp.connect(RABBITMQ_URL);
-        connection.on('error', (err) => log('error', 'rabbitmq_connection_error', { error: err.message }));
-        connection.on('close', async () => {
+        rabbitConnection = await amqp.connect(RABBITMQ_URL);
+        rabbitConnection.on('error', (err) => log('error', 'rabbitmq_connection_error', { error: err.message }));
+        rabbitConnection.on('close', async () => {
+            rabbitConnection = undefined;
             rabbitChannel = undefined;
+            if (isShuttingDown) return;
             log('warn', 'rabbitmq_disconnected_retrying');
             await sleep(3000);
             connectRabbitMQ();
         });
 
-        await stockService.bindStockConsumers(connection);
+        await stockService.bindStockConsumers(rabbitConnection);
 
         log('info', 'rabbitmq_connected');
     } catch (err) {
@@ -172,6 +190,39 @@ app.use('/', createProductRoutes({ productService }));
 
 // ---------------------------------------------------------
 const PORT = process.env.PORT || 3002;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log(`📦 Product Service đang chạy tại http://localhost:${PORT}`);
 });
+
+const closeServer = () => new Promise((resolve, reject) => {
+    server.close((err) => (err ? reject(err) : resolve()));
+});
+
+const gracefulShutdown = async (signal) => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    log('info', 'graceful_shutdown_started', { signal });
+
+    const shutdownTimeout = setTimeout(() => {
+        log('error', 'graceful_shutdown_timeout', { timeoutMs: 10000 });
+        process.exit(1);
+    }, 10000);
+
+    try {
+        await closeServer();
+        if (rabbitChannel) await rabbitChannel.close();
+        if (rabbitConnection) await rabbitConnection.close();
+        await mongoose.connection.close();
+        if (redisClient.isOpen) await redisClient.quit();
+        clearTimeout(shutdownTimeout);
+        log('info', 'graceful_shutdown_completed', { signal });
+        process.exit(0);
+    } catch (error) {
+        clearTimeout(shutdownTimeout);
+        log('error', 'graceful_shutdown_failed', { signal, error: error.message });
+        process.exit(1);
+    }
+};
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
