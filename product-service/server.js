@@ -10,6 +10,7 @@ require('dotenv').config();
 const { register, httpRequestDurationSeconds, httpRequestsTotal } = require('./metrics');
 const openApiSpec = require('./openapi.json');
 const { sleep } = require('./utils/sleep');
+const logger = require('./utils/logger');
 const { createProductService } = require('./services/productService');
 const { createStockService } = require('./services/stockService');
 const { createProductRoutes } = require('./routes/productRoutes');
@@ -31,17 +32,6 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10kb' }));
 
-const log = (level, message, extra = {}) => {
-    const payload = {
-        level,
-        service: 'product-service',
-        message,
-        timestamp: new Date().toISOString(),
-        ...extra,
-    };
-    console.log(JSON.stringify(payload));
-};
-
 const REDIS_URL = process.env.REDIS_URL || 'redis://redis-cache:6379';
 const RABBITMQ_URL = process.env.RABBITMQ_URL;
 let rabbitConnection;
@@ -58,16 +48,16 @@ const connectMongoWithRetry = async () => {
     for (let attempt = 1; attempt <= 5; attempt += 1) {
         try {
             await mongoose.connect(mongoUri);
-            console.log('🍃 Đã kết nối thành công với MongoDB!');
+            logger.info('mongodb_connected');
             return;
         } catch (err) {
             lastError = err;
-            console.error(`❌ Kết nối MongoDB thất bại (lần ${attempt}/5):`, err.message);
+            logger.error('mongodb_connect_failed_retrying', { attempt, maxAttempts: 5, error: err });
             await sleep(1000 * attempt);
         }
     }
 
-    console.error('❌ Không thể kết nối MongoDB sau nhiều lần thử:', lastError?.message);
+    logger.error('mongodb_connect_failed', { error: lastError });
 };
 
 cloudinary.config({
@@ -82,14 +72,14 @@ const redisClient = redis.createClient({ url: REDIS_URL });
 let redisReady = false;
 
 // Xử lý lỗi Redis nếu có
-redisClient.on('error', (err) => console.log('Redis Client Error', err));
+redisClient.on('error', (err) => logger.error('redis_client_error', { error: err }));
 redisClient.on('ready', () => {
     redisReady = true;
-    console.log('🚀 Đã kết nối thành công với Redis!');
+    logger.info('redis_connected');
 });
 redisClient.on('end', () => {
     redisReady = false;
-    console.warn('⚠️ Redis connection closed.');
+    logger.warn('redis_connection_closed');
 });
 
 const connectRedisWithRetry = async () => {
@@ -100,7 +90,7 @@ const connectRedisWithRetry = async () => {
             }
             return;
         } catch (err) {
-            console.error(`❌ Kết nối Redis thất bại (lần ${attempt}/5):`, err.message);
+            logger.error('redis_connect_failed_retrying', { attempt, maxAttempts: 5, error: err });
             await sleep(1000 * attempt);
         }
     }
@@ -110,6 +100,7 @@ const productService = createProductService({
     redisClient,
     getRedisReady: () => redisReady,
     getRabbitReady: () => Boolean(rabbitChannel),
+    logger,
 });
 
 const stockService = createStockService({
@@ -118,32 +109,32 @@ const stockService = createStockService({
         rabbitChannel = channel;
     },
     clearProductCache: productService.clearProductCache,
-    log,
+    logger,
 });
 
 const connectRabbitMQ = async () => {
     if (!RABBITMQ_URL) {
-        log('warn', 'rabbitmq_url_missing');
+        logger.warn('rabbitmq_url_missing');
         return;
     }
 
     try {
         rabbitConnection = await amqp.connect(RABBITMQ_URL);
-        rabbitConnection.on('error', (err) => log('error', 'rabbitmq_connection_error', { error: err.message }));
+        rabbitConnection.on('error', (err) => logger.error('rabbitmq_connection_error', { error: err }));
         rabbitConnection.on('close', async () => {
             rabbitConnection = undefined;
             rabbitChannel = undefined;
             if (isShuttingDown) return;
-            log('warn', 'rabbitmq_disconnected_retrying');
+            logger.warn('rabbitmq_disconnected_retrying');
             await sleep(3000);
             connectRabbitMQ();
         });
 
         await stockService.bindStockConsumers(rabbitConnection);
 
-        log('info', 'rabbitmq_connected');
+        logger.info('rabbitmq_connected');
     } catch (err) {
-        log('error', 'rabbitmq_connect_failed', { error: err.message });
+        logger.error('rabbitmq_connect_failed', { error: err });
         await sleep(3000);
         connectRabbitMQ();
     }
@@ -165,7 +156,7 @@ app.use((req, res, next) => {
         const labels = { method: req.method, route, status_code: String(res.statusCode) };
         httpRequestDurationSeconds.observe(labels, durationSeconds);
         httpRequestsTotal.inc(labels);
-        log('info', 'request_completed', {
+        logger.info('request_completed', {
             requestId: req.requestId,
             method: req.method,
             path: req.originalUrl,
@@ -191,7 +182,7 @@ app.use('/', createProductRoutes({ productService }));
 // ---------------------------------------------------------
 const PORT = process.env.PORT || 3002;
 const server = app.listen(PORT, () => {
-    console.log(`📦 Product Service đang chạy tại http://localhost:${PORT}`);
+    logger.info('product_service_started', { port: PORT });
 });
 
 const closeServer = () => new Promise((resolve, reject) => {
@@ -201,10 +192,10 @@ const closeServer = () => new Promise((resolve, reject) => {
 const gracefulShutdown = async (signal) => {
     if (isShuttingDown) return;
     isShuttingDown = true;
-    log('info', 'graceful_shutdown_started', { signal });
+    logger.info('graceful_shutdown_started', { signal });
 
     const shutdownTimeout = setTimeout(() => {
-        log('error', 'graceful_shutdown_timeout', { timeoutMs: 10000 });
+        logger.error('graceful_shutdown_timeout', { timeoutMs: 10000 });
         process.exit(1);
     }, 10000);
 
@@ -215,11 +206,11 @@ const gracefulShutdown = async (signal) => {
         await mongoose.connection.close();
         if (redisClient.isOpen) await redisClient.quit();
         clearTimeout(shutdownTimeout);
-        log('info', 'graceful_shutdown_completed', { signal });
+        logger.info('graceful_shutdown_completed', { signal });
         process.exit(0);
     } catch (error) {
         clearTimeout(shutdownTimeout);
-        log('error', 'graceful_shutdown_failed', { signal, error: error.message });
+        logger.error('graceful_shutdown_failed', { signal, error });
         process.exit(1);
     }
 };

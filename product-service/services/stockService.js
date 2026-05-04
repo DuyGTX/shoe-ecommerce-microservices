@@ -15,7 +15,7 @@ const STOCK_RELEASE_QUEUE = 'stock_release_queue';
 const STOCK_RELEASE_ROUTING_KEY = 'stock.expired';
 const STOCK_HOLD_TTL_MS = Number(process.env.STOCK_HOLD_TTL_MS || 300000);
 
-const createStockService = ({ getRabbitChannel, setRabbitChannel, clearProductCache, log }) => {
+const createStockService = ({ getRabbitChannel, setRabbitChannel, clearProductCache, logger }) => {
     const publishStockEvent = (routingKey, payload) => {
         const rabbitChannel = getRabbitChannel();
         if (!rabbitChannel) return false;
@@ -72,7 +72,7 @@ const createStockService = ({ getRabbitChannel, setRabbitChannel, clearProductCa
                 } catch (err) {
                     if (err.code === 11000) {
                         alreadyProcessed = true;
-                        log('info', 'stock_reservation_transaction_committed', { orderId, status: 'COMMITTED', idempotentReplay: true });
+                        logger.info('stock_reservation_transaction_committed', { orderId, status: 'COMMITTED', idempotentReplay: true });
                         return;
                     }
                     throw err;
@@ -113,12 +113,12 @@ const createStockService = ({ getRabbitChannel, setRabbitChannel, clearProductCa
                     quantity: Number(item.quantity),
                 })),
             });
-            log('info', 'stock_reservation_transaction_committed', { orderId, status: 'COMMITTED', itemCount: items.length });
-            log('info', 'stock_reserved', { orderId, itemCount: items.length });
+            logger.info('stock_reservation_transaction_committed', { orderId, status: 'COMMITTED', itemCount: items.length });
+            logger.info('stock_reserved', { orderId, itemCount: items.length });
         } catch (err) {
-            log('warn', 'stock_reservation_transaction_aborted', { orderId, status: 'ABORTED', reason: err.message });
+            logger.warn('stock_reservation_transaction_aborted', { orderId, status: 'ABORTED', reason: err.message, error: err });
             publishStockEvent('stock.failed', { orderId, reason: err.message });
-            log('warn', 'stock_reservation_failed', { orderId, reason: err.message });
+            logger.warn('stock_reservation_failed', { orderId, reason: err.message, error: err });
         } finally {
             await session.endSession();
         }
@@ -127,7 +127,7 @@ const createStockService = ({ getRabbitChannel, setRabbitChannel, clearProductCa
     const releaseExpiredStock = async ({ orderId, items = [] }) => {
         const order = await fetchOrderStatus(orderId);
         if (!['PENDING', 'CANCELLED'].includes(order.status)) {
-            log('info', 'stock_release_skipped_order_finalized', { orderId, status: order.status });
+            logger.info('stock_release_skipped_order_finalized', { orderId, status: order.status });
             return;
         }
 
@@ -138,7 +138,7 @@ const createStockService = ({ getRabbitChannel, setRabbitChannel, clearProductCa
                     await InventoryLog.create([{ orderId: String(orderId), action: 'RELEASE_EXPIRED_STOCK', items }], { session });
                 } catch (err) {
                     if (err.code === 11000) {
-                        log('info', 'stock_release_already_processed', { orderId });
+                        logger.info('stock_release_already_processed', { orderId });
                         return;
                     }
                     throw err;
@@ -158,7 +158,7 @@ const createStockService = ({ getRabbitChannel, setRabbitChannel, clearProductCa
                         throw new Error(`Không hoàn được tồn kho cho sản phẩm ${item.productId}`);
                     }
 
-                    log('info', 'stock_released_after_payment_timeout', {
+                    logger.info('stock_released_after_payment_timeout', {
                         orderId,
                         productId: item.productId,
                         quantity: Number(item.quantity),
@@ -167,12 +167,12 @@ const createStockService = ({ getRabbitChannel, setRabbitChannel, clearProductCa
                 }
             });
 
-            log('info', 'stock_release_transaction_committed', { orderId, status: 'COMMITTED', itemCount: items.length });
+            logger.info('stock_release_transaction_committed', { orderId, status: 'COMMITTED', itemCount: items.length });
 
             await clearProductCache();
             if (order.status === 'PENDING') await expireOrder(orderId);
         } catch (err) {
-            log('warn', 'stock_release_transaction_aborted', { orderId, status: 'ABORTED', reason: err.message });
+            logger.warn('stock_release_transaction_aborted', { orderId, status: 'ABORTED', reason: err.message, error: err });
             throw err;
         } finally {
             await session.endSession();
@@ -207,7 +207,7 @@ const createStockService = ({ getRabbitChannel, setRabbitChannel, clearProductCa
                 await reserveOrderStock(payload);
                 rabbitChannel.ack(msg);
             } catch (err) {
-                log('error', 'order_created_consume_failed', { error: err.message });
+                logger.error('order_created_consume_failed', { error: err });
                 rabbitChannel.nack(msg, false, true);
             }
         });
@@ -219,7 +219,7 @@ const createStockService = ({ getRabbitChannel, setRabbitChannel, clearProductCa
                 await releaseExpiredStock(payload);
                 rabbitChannel.ack(msg);
             } catch (err) {
-                log('error', 'stock_release_consume_failed', { error: err.message });
+                logger.error('stock_release_consume_failed', { error: err });
                 rabbitChannel.nack(msg, false, true);
             }
         });

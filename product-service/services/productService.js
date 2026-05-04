@@ -5,7 +5,7 @@ const Product = require('../models/Product');
 
 const CACHE_KEY = 'products_all';
 
-const createProductService = ({ redisClient, getRedisReady, getRabbitReady }) => {
+const createProductService = ({ redisClient, getRedisReady, getRabbitReady, logger }) => {
     const clearProductCache = async () => {
         await redisClient.del(CACHE_KEY);
     };
@@ -56,7 +56,7 @@ const createProductService = ({ redisClient, getRedisReady, getRabbitReady }) =>
         const newProduct = new Product(payload);
         const savedProduct = await newProduct.save();
         await clearProductCache();
-        console.log('🧹 Đã xóa cache vì có sản phẩm mới!');
+        logger.info('product_cache_cleared', { reason: 'product_created' });
         return savedProduct;
     };
 
@@ -64,11 +64,11 @@ const createProductService = ({ redisClient, getRedisReady, getRabbitReady }) =>
         const cachedProducts = await redisClient.get(CACHE_KEY);
 
         if (cachedProducts) {
-            console.log("⚡ Cache Hit! - Trả dữ liệu siêu tốc từ Redis");
+            logger.info('product_cache_hit', { cacheKey: CACHE_KEY });
             return { fromCache: true, body: JSON.parse(cachedProducts) };
         }
 
-        console.log("🐢 Cache Miss! - Phải chui vào MongoDB lấy dữ liệu");
+        logger.info('product_cache_miss', { cacheKey: CACHE_KEY });
         const products = await Product.find().sort({ createdAt: -1 }); 
         const body = { total: products.length, data: products };
         await redisClient.setEx(CACHE_KEY, 60, JSON.stringify(body));
