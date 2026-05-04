@@ -1,5 +1,6 @@
 const path = require("path");
 const { runner } = require("node-pg-migrate");
+const logger = require("../utils/logger");
 require("dotenv").config();
 
 const direction = process.argv[2] || "up";
@@ -14,9 +15,9 @@ runner({
   count: direction === "down" ? 1 : undefined,
 })
   .then(() => {
-    console.log(`Database migrations completed (${direction}).`);
+    logger.info("database_migrations_completed", { direction });
   })
   .catch((error) => {
-    console.error("Database migration failed:", error.message);
+    logger.error("database_migration_failed", { direction, error });
     process.exit(1);
   });

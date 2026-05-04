@@ -1,5 +1,6 @@
 const { Pool } = require('pg');
 require('dotenv').config();
+const logger = require('./utils/logger');
 
 // 1. Giữ nguyên cách cấu hình cực chuẩn của bạn
 const pool = new Pool({
@@ -11,11 +12,11 @@ const pool = new Pool({
 });
 
 pool.on('connect', () => {
-    console.log('✅ Đã kết nối thành công với PostgreSQL Database!');
+    logger.info('postgres_connected');
 });
 
 pool.on('error', (err) => {
-    console.error('❌ Lỗi kết nối Database:', err);
+    logger.error('postgres_connection_error', { error: err });
 });
 
 module.exports = { pool };

@@ -7,6 +7,7 @@ require("dotenv").config();
 const { pool } = require("./db");
 const userRoutes = require("./routes/userRoutes");
 const { sleep } = require("./utils/httpClient");
+const logger = require("./utils/logger");
 const { register, httpRequestDurationSeconds, httpRequestsTotal } = require("./metrics");
 const openApiSpec = require("./openapi.json");
 
@@ -27,16 +28,6 @@ app.use(cors({
 }));
 app.use(express.json({ limit: "10kb" }));
 
-const log = (level, message, extra = {}) => {
-  console.log(JSON.stringify({
-    level,
-    service: "user-service",
-    message,
-    timestamp: new Date().toISOString(),
-    ...extra,
-  }));
-};
-
 const CLEAR_CART_MAX_RETRIES = 3;
 let rabbitConnection;
 let rabbitChannel;
@@ -54,7 +45,7 @@ app.use((req, res, next) => {
     const labels = { method: req.method, route, status_code: String(res.statusCode) };
     httpRequestDurationSeconds.observe(labels, durationSeconds);
     httpRequestsTotal.inc(labels);
-    log("info", "request_completed", {
+    logger.info("request_completed", {
       requestId: req.requestId,
       method: req.method,
       path: req.originalUrl,
@@ -82,13 +73,13 @@ const consumeRabbitMQ = async () => {
     rabbitConnection = await amqp.connect(process.env.RABBITMQ_URL);
     rabbitChannel = await rabbitConnection.createChannel();
     rabbitConnection.on("error", (err) => {
-      console.error("❌ RabbitMQ connection error:", err.message);
+      logger.error("rabbitmq_connection_error", { error: err });
     });
     rabbitConnection.on("close", async () => {
       rabbitConnection = null;
       rabbitChannel = null;
       if (isShuttingDown) return;
-      console.warn("⚠️ RabbitMQ disconnected, retrying in 3s...");
+      logger.warn("rabbitmq_disconnected_retrying", { retryInMs: 3000 });
       await sleep(3000);
       consumeRabbitMQ();
     });
@@ -105,7 +96,7 @@ const consumeRabbitMQ = async () => {
     // 2. Chỉ nhận 1 tin nhắn mỗi lần
     rabbitChannel.prefetch(1);
 
-    console.log("📨 Đang chờ thư từ Bưu điện RabbitMQ...");
+    logger.info("rabbitmq_waiting_for_clear_cart_messages");
 
     rabbitChannel.consume(
       "clear_cart_queue_v2",
@@ -113,7 +104,7 @@ const consumeRabbitMQ = async () => {
         if (msg !== null) {
           try {
             const data = JSON.parse(msg.content.toString());
-            console.log(`📦 Đang xử lý xóa giỏ hàng cho User ID: ${data.userId}`);
+            logger.info("clear_cart_message_processing", { userId: data.userId });
 
             // THỰC THI LOGIC XỬ LÝ (Đã bỏ dấu //)
             // Đảm bảo biến 'pool' đã được khai báo ở đầu file nhé!
@@ -121,20 +112,16 @@ const consumeRabbitMQ = async () => {
 
             // XÁC NHẬN THÀNH CÔNG: Xóa tin khỏi RabbitMQ
             rabbitChannel.ack(msg);
-            console.log("✅ Đã dọn sạch giỏ hàng và gửi xác nhận (Ack)!");
+            logger.info("clear_cart_message_acked", { userId: data.userId });
             
           } catch (error) {
             const retryCount = Number(msg.properties.headers?.["x-retry-count"] || 0);
 
             if (retryCount >= CLEAR_CART_MAX_RETRIES) {
-              console.log(JSON.stringify({
-                level: "error",
-                service: "user-service",
-                message: "clear_cart_message_dead_lettered",
-                timestamp: new Date().toISOString(),
+              logger.error("clear_cart_message_dead_lettered", {
                 retryCount,
-                error: error.message,
-              }));
+                error,
+              });
               rabbitChannel.nack(msg, false, false);
               return;
             }
@@ -150,7 +137,7 @@ const consumeRabbitMQ = async () => {
       { noAck: false }
     );
   } catch (error) {
-    console.error("❌ Lỗi kết nối RabbitMQ:", error.message);
+    logger.error("rabbitmq_connect_failed", { error });
   }
 };
 
@@ -159,7 +146,7 @@ app.use("/", userRoutes);
 
 const PORT = process.env.PORT || 3001;
 const server = app.listen(PORT, () => {
-  console.log(`🚀 User Service đang chạy tại http://localhost:${PORT}`);
+  logger.info("user_service_started", { port: PORT });
 });
 
 const closeServer = () => new Promise((resolve, reject) => {
@@ -169,10 +156,10 @@ const closeServer = () => new Promise((resolve, reject) => {
 const gracefulShutdown = async (signal) => {
   if (isShuttingDown) return;
   isShuttingDown = true;
-  log("info", "graceful_shutdown_started", { signal });
+  logger.info("graceful_shutdown_started", { signal });
 
   const shutdownTimeout = setTimeout(() => {
-    log("error", "graceful_shutdown_timeout", { timeoutMs: 10000 });
+    logger.error("graceful_shutdown_timeout", { timeoutMs: 10000 });
     process.exit(1);
   }, 10000);
 
@@ -182,11 +169,11 @@ const gracefulShutdown = async (signal) => {
     if (rabbitConnection) await rabbitConnection.close();
     await pool.end();
     clearTimeout(shutdownTimeout);
-    log("info", "graceful_shutdown_completed", { signal });
+    logger.info("graceful_shutdown_completed", { signal });
     process.exit(0);
   } catch (error) {
     clearTimeout(shutdownTimeout);
-    log("error", "graceful_shutdown_failed", { signal, error: error.message });
+    logger.error("graceful_shutdown_failed", { signal, error });
     process.exit(1);
   }
 };
