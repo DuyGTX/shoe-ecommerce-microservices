@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
 require("dotenv").config();
 
 const { pool } = require("./db");
@@ -14,8 +15,21 @@ const { createAdminMiddleware } = require("./middlewares/adminMiddleware");
 const { createAuthMiddleware } = require("./middlewares/authMiddleware");
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+
+const DEFAULT_ALLOWED_ORIGINS = ["http://localhost:3000", "http://localhost:5173", "http://api-gateway:3000"];
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || DEFAULT_ALLOWED_ORIGINS.join(","))
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+app.use(helmet());
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error("Not allowed by CORS"));
+  },
+}));
+app.use(express.json({ limit: "10kb" }));
 
 const log = (level, message, extra = {}) => {
   console.log(JSON.stringify({
@@ -89,6 +103,39 @@ app.use("/", createOrderRoutes({ orderController, requireAdmin, verifyToken }));
 messageBroker.connect();
 
 const PORT = process.env.PORT || 3003;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`🚀 Order Service đang chạy tại http://localhost:${PORT}`);
 });
+
+const closeServer = () => new Promise((resolve, reject) => {
+  server.close((err) => (err ? reject(err) : resolve()));
+});
+
+let isShuttingDown = false;
+
+const gracefulShutdown = async (signal) => {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  log("info", "graceful_shutdown_started", { signal });
+
+  const shutdownTimeout = setTimeout(() => {
+    log("error", "graceful_shutdown_timeout", { timeoutMs: 10000 });
+    process.exit(1);
+  }, 10000);
+
+  try {
+    await closeServer();
+    await messageBroker.close();
+    await pool.end();
+    clearTimeout(shutdownTimeout);
+    log("info", "graceful_shutdown_completed", { signal });
+    process.exit(0);
+  } catch (error) {
+    clearTimeout(shutdownTimeout);
+    log("error", "graceful_shutdown_failed", { signal, error: error.message });
+    process.exit(1);
+  }
+};
+
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));

@@ -7,7 +7,9 @@ const STOCK_RESERVED_QUEUE = "order_stock_reserved_queue";
 const STOCK_FAILED_QUEUE = "order_stock_failed_queue";
 
 const createMessageBroker = ({ rabbitmqUrl, log }) => {
+  let rabbitConnection;
   let rabbitChannel;
+  let isShuttingDown = false;
   let orderService;
 
   const publishOrderCreated = (orderId, items) => {
@@ -54,15 +56,19 @@ const createMessageBroker = ({ rabbitmqUrl, log }) => {
   };
 
   const connect = async () => {
+    if (isShuttingDown) return;
+
     try {
-      const connection = await amqp.connect(rabbitmqUrl);
-      rabbitChannel = await connection.createChannel();
-      connection.on("error", (err) => {
+      rabbitConnection = await amqp.connect(rabbitmqUrl);
+      rabbitChannel = await rabbitConnection.createChannel();
+      rabbitConnection.on("error", (err) => {
         console.error("❌ RabbitMQ connection error:", err.message);
       });
-      connection.on("close", async () => {
-        console.warn("⚠️ RabbitMQ disconnected, retrying in 3s...");
+      rabbitConnection.on("close", async () => {
+        rabbitConnection = undefined;
         rabbitChannel = undefined;
+        if (isShuttingDown) return;
+        console.warn("⚠️ RabbitMQ disconnected, retrying in 3s...");
         await sleep(3000);
         connect();
       });
@@ -90,8 +96,21 @@ const createMessageBroker = ({ rabbitmqUrl, log }) => {
     }
   };
 
+  const close = async () => {
+    isShuttingDown = true;
+    if (rabbitChannel) {
+      await rabbitChannel.close();
+      rabbitChannel = undefined;
+    }
+    if (rabbitConnection) {
+      await rabbitConnection.close();
+      rabbitConnection = undefined;
+    }
+  };
+
   return {
     connect,
+    close,
     publishOrderCreated,
     publishCartClearRequested,
     getRabbitReady: () => Boolean(rabbitChannel),
