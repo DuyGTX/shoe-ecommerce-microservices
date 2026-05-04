@@ -13,6 +13,7 @@ const { createOrderController } = require("./controllers/orderController");
 const { createOrderRoutes } = require("./routes/orderRoutes");
 const { createAdminMiddleware } = require("./middlewares/adminMiddleware");
 const { createAuthMiddleware } = require("./middlewares/authMiddleware");
+const logger = require("./utils/logger");
 
 const app = express();
 
@@ -31,21 +32,11 @@ app.use(cors({
 }));
 app.use(express.json({ limit: "10kb" }));
 
-const log = (level, message, extra = {}) => {
-  console.log(JSON.stringify({
-    level,
-    service: "order-service",
-    message,
-    timestamp: new Date().toISOString(),
-    ...extra,
-  }));
-};
-
 const INTERNAL_SERVICE_TOKEN = process.env.INTERNAL_SERVICE_TOKEN;
 const JWT_SECRET_CURRENT = process.env.JWT_SECRET_CURRENT || process.env.JWT_SECRET;
 const JWT_SECRET_PREVIOUS = process.env.JWT_SECRET_PREVIOUS;
 
-const messageBroker = createMessageBroker({ rabbitmqUrl: process.env.RABBITMQ_URL, log });
+const messageBroker = createMessageBroker({ rabbitmqUrl: process.env.RABBITMQ_URL, logger });
 const orderModel = createOrderModel({ pool });
 const orderService = createOrderService({
   pool,
@@ -53,7 +44,7 @@ const orderService = createOrderService({
   getRabbitReady: messageBroker.getRabbitReady,
   publishOrderCreated: messageBroker.publishOrderCreated,
   publishCartClearRequested: messageBroker.publishCartClearRequested,
-  log,
+  logger,
 });
 messageBroker.setOrderService(orderService);
 
@@ -69,7 +60,7 @@ app.use((req, res, next) => {
     const labels = { method: req.method, route, status_code: String(res.statusCode) };
     httpRequestDurationSeconds.observe(labels, durationSeconds);
     httpRequestsTotal.inc(labels);
-    log("info", "request_completed", {
+    logger.info("request_completed", {
       requestId: req.requestId,
       method: req.method,
       path: req.originalUrl,
@@ -95,7 +86,7 @@ const verifyToken = createAuthMiddleware({ jwtSecretCurrent: JWT_SECRET_CURRENT,
 const orderController = createOrderController({
   orderService,
   getRabbitReady: messageBroker.getRabbitReady,
-  log,
+  logger,
 });
 
 app.use("/", createOrderRoutes({ orderController, requireAdmin, verifyToken }));
@@ -104,7 +95,7 @@ messageBroker.connect();
 
 const PORT = process.env.PORT || 3003;
 const server = app.listen(PORT, () => {
-  console.log(`🚀 Order Service đang chạy tại http://localhost:${PORT}`);
+  logger.info("order_service_started", { port: PORT, url: `http://localhost:${PORT}` });
 });
 
 const closeServer = () => new Promise((resolve, reject) => {
@@ -116,10 +107,10 @@ let isShuttingDown = false;
 const gracefulShutdown = async (signal) => {
   if (isShuttingDown) return;
   isShuttingDown = true;
-  log("info", "graceful_shutdown_started", { signal });
+  logger.info("graceful_shutdown_started", { signal });
 
   const shutdownTimeout = setTimeout(() => {
-    log("error", "graceful_shutdown_timeout", { timeoutMs: 10000 });
+    logger.error("graceful_shutdown_timeout", { timeoutMs: 10000 });
     process.exit(1);
   }, 10000);
 
@@ -128,11 +119,11 @@ const gracefulShutdown = async (signal) => {
     await messageBroker.close();
     await pool.end();
     clearTimeout(shutdownTimeout);
-    log("info", "graceful_shutdown_completed", { signal });
+    logger.info("graceful_shutdown_completed", { signal });
     process.exit(0);
   } catch (error) {
     clearTimeout(shutdownTimeout);
-    log("error", "graceful_shutdown_failed", { signal, error: error.message });
+    logger.error("graceful_shutdown_failed", { signal, error });
     process.exit(1);
   }
 };

@@ -8,7 +8,7 @@ const createReplayPayload = (row) => ({
   idempotentReplay: true,
 });
 
-const createOrderService = ({ pool, orderModel, getRabbitReady, publishOrderCreated, publishCartClearRequested, log }) => {
+const createOrderService = ({ pool, orderModel, getRabbitReady, publishOrderCreated, publishCartClearRequested, logger }) => {
   const replayByKey = async (userId, key) => {
     const replay = await orderModel.findReplayByKey(userId, key);
     if (replay.rows.length === 0) return null;
@@ -62,9 +62,11 @@ const createOrderService = ({ pool, orderModel, getRabbitReady, publishOrderCrea
       let transactionStarted = false;
 
       try {
+        logger.info("checkout_started", { userId, requestId, idempotencyKey });
         const existingPayload = await replayByKey(userId, idempotencyKey);
         if (existingPayload) {
           client.release();
+          logger.info("checkout_idempotent_replay", { userId, requestId, idempotencyKey, orderId: existingPayload.orderId });
           return { statusCode: 200, body: existingPayload };
         }
 
@@ -83,16 +85,21 @@ const createOrderService = ({ pool, orderModel, getRabbitReady, publishOrderCrea
         });
         const cartItems = cartResponse.data.data;
         const grandTotal = cartResponse.data.grandTotal;
+        logger.info("checkout_cart_fetched", { userId, requestId, itemCount: cartItems?.length || 0, grandTotal });
 
         if (!cartItems || cartItems.length === 0) {
           client.release();
+          logger.warn("checkout_empty_cart", { userId, requestId });
           return { statusCode: 400, body: { message: "Giỏ hàng của bạn đang trống!" } };
         }
 
         await client.query("BEGIN");
         transactionStarted = true;
+        logger.info("checkout_transaction_started", { userId, requestId });
         const orderId = await orderModel.createOrderWithItems(client, { userId, idempotencyKey, grandTotal, cartItems });
+        logger.info("checkout_order_created", { userId, requestId, orderId, itemCount: cartItems.length, grandTotal });
         await client.query("COMMIT");
+        logger.info("checkout_transaction_committed", { userId, requestId, orderId });
         client.release();
 
         const reserveItems = cartItems.map((item) => ({
@@ -103,6 +110,7 @@ const createOrderService = ({ pool, orderModel, getRabbitReady, publishOrderCrea
         }));
 
         if (!getRabbitReady()) {
+          logger.warn("checkout_rabbitmq_not_ready", { userId, requestId, orderId });
           return {
             statusCode: 202,
             body: {
@@ -114,8 +122,8 @@ const createOrderService = ({ pool, orderModel, getRabbitReady, publishOrderCrea
           };
         }
 
-        publishOrderCreated(orderId, reserveItems);
-        log("info", "order_created_event_published", { orderId, items: reserveItems.length });
+        const published = publishOrderCreated(orderId, reserveItems);
+        logger.info("order_created_event_published", { userId, requestId, orderId, itemCount: reserveItems.length, published });
         return {
           statusCode: 202,
           body: {
@@ -129,11 +137,18 @@ const createOrderService = ({ pool, orderModel, getRabbitReady, publishOrderCrea
         if (err.code === "23505") {
           const replayPayload = await orderModel.findReplayByKey(userId, idempotencyKey);
           client.release();
-          if (replayPayload.rows.length > 0) return { statusCode: 200, body: createReplayPayload(replayPayload.rows[0]) };
+          if (replayPayload.rows.length > 0) {
+            logger.info("checkout_idempotent_conflict_replayed", { userId, requestId, idempotencyKey, orderId: replayPayload.rows[0].id });
+            return { statusCode: 200, body: createReplayPayload(replayPayload.rows[0]) };
+          }
         }
 
-        if (transactionStarted) await client.query("ROLLBACK");
+        if (transactionStarted) {
+          await client.query("ROLLBACK");
+          logger.warn("checkout_transaction_rolled_back", { userId, requestId, idempotencyKey });
+        }
         client.release();
+        logger.error("checkout_failed", { error: err, userId, requestId, idempotencyKey });
         throw err;
       }
     },
@@ -183,13 +198,13 @@ const createOrderService = ({ pool, orderModel, getRabbitReady, publishOrderCrea
       const updated = await orderModel.confirmPendingOrder(orderId);
       if (updated.rows.length > 0) {
         publishCartClearRequested(updated.rows[0].user_id, orderId);
-        log("info", "stock_reserved_order_confirmed", { orderId });
+        logger.info("stock_reserved_order_confirmed", { orderId, userId: updated.rows[0].user_id });
       }
     },
 
     async cancelOrderStockFailed(orderId, reason) {
       await orderModel.cancelPendingOrder(orderId);
-      log("warn", "stock_failed_order_cancelled", { orderId, reason });
+      logger.warn("stock_failed_order_cancelled", { orderId, reason });
     },
   };
 };
