@@ -9,13 +9,14 @@ const ORDER_SERVICE_URL = process.env.ORDER_SERVICE_URL || 'http://order-service
 const ORDER_EVENTS_EXCHANGE = 'order_events';
 const STOCK_EVENTS_EXCHANGE = 'stock_events';
 const ORDER_CREATED_QUEUE = 'product_order_created_queue';
+const STOCK_RELEASE_REQUESTED_QUEUE = 'product_stock_release_queue';
 const STOCK_RELEASE_DLX = 'stock_release_dlx';
 const STOCK_HOLDING_QUEUE = 'stock_holding_queue';
 const STOCK_RELEASE_QUEUE = 'stock_release_queue';
 const STOCK_RELEASE_ROUTING_KEY = 'stock.expired';
 const STOCK_HOLD_TTL_MS = Number(process.env.STOCK_HOLD_TTL_MS || 300000);
 
-const createStockService = ({ getRabbitChannel, setRabbitChannel, clearProductCache, logger }) => {
+const createStockService = ({ getRabbitChannel, setRabbitChannel, clearProductCache, rollbackStock, logger }) => {
     const publishStockEvent = (routingKey, payload) => {
         const rabbitChannel = getRabbitChannel();
         if (!rabbitChannel) return false;
@@ -196,6 +197,8 @@ const createStockService = ({ getRabbitChannel, setRabbitChannel, clearProductCa
         });
         await rabbitChannel.assertQueue(STOCK_RELEASE_QUEUE, { durable: true });
         await rabbitChannel.bindQueue(STOCK_RELEASE_QUEUE, STOCK_RELEASE_DLX, STOCK_RELEASE_ROUTING_KEY);
+        await rabbitChannel.assertQueue(STOCK_RELEASE_REQUESTED_QUEUE, { durable: true });
+        await rabbitChannel.bindQueue(STOCK_RELEASE_REQUESTED_QUEUE, STOCK_EVENTS_EXCHANGE, 'stock.release_requested');
         await rabbitChannel.assertQueue(ORDER_CREATED_QUEUE, { durable: true });
         await rabbitChannel.bindQueue(ORDER_CREATED_QUEUE, ORDER_EVENTS_EXCHANGE, 'order.created');
         await rabbitChannel.prefetch(5);
@@ -220,6 +223,21 @@ const createStockService = ({ getRabbitChannel, setRabbitChannel, clearProductCa
                 rabbitChannel.ack(msg);
             } catch (err) {
                 logger.error('stock_release_consume_failed', { error: err });
+                rabbitChannel.nack(msg, false, true);
+            }
+        });
+
+        rabbitChannel.consume(STOCK_RELEASE_REQUESTED_QUEUE, async (msg) => {
+            if (!msg) return;
+            try {
+                const payload = JSON.parse(msg.content.toString());
+                const { orderId, reason = 'payment_failed', items = [] } = payload;
+                logger.info('stock_release_requested_consumed', { orderId, reason, itemCount: items.length });
+                await rollbackStock({ orderId, reason, items });
+                rabbitChannel.ack(msg);
+                logger.info('stock_release_requested_acked', { orderId, reason });
+            } catch (err) {
+                logger.error('stock_release_requested_consume_failed', { error: err });
                 rabbitChannel.nack(msg, false, true);
             }
         });

@@ -31,17 +31,21 @@ const createTestContext = () => {
   };
   const publishOrderCreated = jest.fn();
   const publishCartClearRequested = jest.fn();
-  const log = jest.fn();
+  const logger = {
+    info: jest.fn(),
+    warn: jest.fn(),
+    error: jest.fn(),
+  };
   const service = createOrderService({
     pool,
     orderModel,
     getRabbitReady: jest.fn(() => true),
     publishOrderCreated,
     publishCartClearRequested,
-    log,
+    logger,
   });
 
-  return { client, pool, orderModel, publishOrderCreated, publishCartClearRequested, log, service };
+  return { client, pool, orderModel, publishOrderCreated, publishCartClearRequested, logger, service };
 };
 
 describe("orderService.checkout", () => {

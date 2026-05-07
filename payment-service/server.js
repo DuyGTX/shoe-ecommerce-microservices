@@ -1,7 +1,9 @@
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
-require("dotenv").config();
+const { loadEnv } = require("./utils/loadEnv");
+
+const envLoadResult = loadEnv();
 
 const { pool } = require("./db");
 const logger = require("./utils/logger");
@@ -49,6 +51,11 @@ app.use((req, res, next) => {
 const messageBroker = createMessageBroker({ rabbitmqUrl: process.env.RABBITMQ_URL, logger });
 const paymentTransactionModel = createPaymentTransactionModel({ pool });
 const paymentService = createPaymentService({ paymentTransactionModel, messageBroker, logger });
+
+logger.info("env_files_loaded", {
+  loadedServiceEnv: envLoadResult.loadedServiceEnv,
+  loadedRootEnv: envLoadResult.loadedRootEnv,
+});
 
 app.use("/", createPaymentRouter({ paymentService, logger }));
 

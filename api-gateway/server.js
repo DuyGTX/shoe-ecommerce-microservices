@@ -8,6 +8,8 @@ const swaggerUi = require('swagger-ui-express');
 const swaggerPortalOptions = require('./swagger');
 const { register, httpRequestDurationSeconds, httpRequestsTotal } = require('./metrics');
 const app = express();
+const trustProxyHops = Number(process.env.TRUST_PROXY_HOPS || 1);
+app.set('trust proxy', Number.isFinite(trustProxyHops) ? trustProxyHops : 1);
 const INTERNAL_SERVICE_TOKEN = process.env.INTERNAL_SERVICE_TOKEN;
 
 const log = (level, message, extra = {}) => {

@@ -230,6 +230,21 @@ const createOrderService = ({ pool, orderModel, getRabbitReady, publishOrderCrea
       await orderModel.cancelPendingOrder(orderId);
       logger.warn("stock_failed_order_cancelled", { orderId, reason });
     },
+
+    async getOrderItemsForSaga(orderId) {
+      const result = await orderModel.findItems(orderId);
+      if (result.rows.length === 0) {
+        logger.warn("order_items_for_saga_empty", { orderId });
+        return [];
+      }
+
+      return result.rows.map((item) => ({
+        productId: item.product_id,
+        quantity: Number(item.quantity),
+        color: item.color,
+        size: Number(item.size),
+      }));
+    },
   };
 };
 

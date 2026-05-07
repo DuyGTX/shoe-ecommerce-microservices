@@ -207,8 +207,6 @@ services:
       - VNPAY_HASH_SECRET=${VNPAY_HASH_SECRET:-YOUR_SANDBOX_HASH_SECRET}
       - VNPAY_URL=${VNPAY_URL:-https://sandbox.vnpayment.vn/paymentv2/vpcpay.html}
       - VNPAY_RETURN_URL=${VNPAY_RETURN_URL:-http://localhost:3000/payments/vnpay/return}
-    ports:
-      - "3004:3004"
     depends_on:
       postgres-db:
         condition: service_healthy
@@ -261,8 +259,8 @@ services:
     container_name: shoe_grafana
     restart: always
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-shoe_admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-change-me-grafana-password}
     ports:
       - "3005:3000"
     depends_on:

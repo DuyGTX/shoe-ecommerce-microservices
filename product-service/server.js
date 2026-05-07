@@ -109,6 +109,7 @@ const stockService = createStockService({
         rabbitChannel = channel;
     },
     clearProductCache: productService.clearProductCache,
+    rollbackStock: productService.rollbackStock,
     logger,
 });
 

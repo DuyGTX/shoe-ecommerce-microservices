@@ -54,7 +54,7 @@ const createMessageBroker = ({ rabbitmqUrl, logger }) => {
     return published;
   };
 
-  const publishStockReleaseRequested = (orderId, reason = "payment_failed") => {
+  const publishStockReleaseRequested = (orderId, items = [], reason = "payment_failed") => {
     if (!rabbitChannel) {
       logger.warn("rabbitmq_publish_skipped", {
         exchange: STOCK_EVENTS_EXCHANGE,
@@ -65,7 +65,7 @@ const createMessageBroker = ({ rabbitmqUrl, logger }) => {
       return false;
     }
 
-    const payload = { orderId, reason };
+    const payload = { orderId, reason, items };
     const published = rabbitChannel.publish(
       STOCK_EVENTS_EXCHANGE,
       "stock.release_requested",
@@ -78,6 +78,7 @@ const createMessageBroker = ({ rabbitmqUrl, logger }) => {
       routingKey: "stock.release_requested",
       orderId,
       reason,
+      itemCount: items.length,
       published,
     });
     return published;
@@ -142,7 +143,8 @@ const createMessageBroker = ({ rabbitmqUrl, logger }) => {
         logger.info("rabbitmq_event_consumed", { queue: PAYMENT_FAILED_QUEUE, routingKey, orderId, status: "failed" });
         const result = await orderService.updateOrderStatus(orderId, "failed");
         if (result.updated) {
-          publishStockReleaseRequested(orderId, "payment_failed");
+          const items = await orderService.getOrderItemsForSaga(orderId);
+          publishStockReleaseRequested(orderId, items, "payment_failed");
         }
         rabbitChannel.ack(msg);
         logger.info("rabbitmq_message_acked", { queue: PAYMENT_FAILED_QUEUE, routingKey, orderId, status: "failed" });

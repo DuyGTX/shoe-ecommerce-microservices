@@ -118,6 +118,65 @@ const createProductService = ({ redisClient, getRedisReady, getRabbitReady, logg
 
     const getProductById = async (id) => Product.findById(id);
 
+    const rollbackStock = async ({ orderId, items = [], reason = 'payment_failed' }) => {
+        if (!Array.isArray(items) || items.length === 0) {
+            logger.warn('stock_release_requested_empty_items', { orderId, reason });
+            return { processedCount: 0, skippedCount: 0 };
+        }
+
+        const session = await mongoose.startSession();
+        let processedCount = 0;
+        let skippedCount = 0;
+
+        try {
+            await session.withTransaction(async () => {
+                for (const item of items) {
+                    const productId = item?.productId;
+                    const quantity = Number(item?.quantity);
+                    const color = item?.color;
+                    const size = Number(item?.size);
+
+                    if (!productId || !Number.isFinite(quantity) || quantity <= 0 || !color || !Number.isFinite(size)) {
+                        skippedCount += 1;
+                        logger.warn('stock_release_item_invalid', { orderId, reason, item });
+                        continue;
+                    }
+
+                    const result = await Product.updateOne(
+                        {
+                            _id: productId,
+                            variants: { $elemMatch: { color, size } },
+                        },
+                        { $inc: { 'variants.$.stock': quantity } },
+                        { session },
+                    );
+
+                    if (result.modifiedCount !== 1) {
+                        skippedCount += 1;
+                        logger.warn('stock_release_item_not_found', { orderId, reason, productId, color, size, quantity });
+                        continue;
+                    }
+
+                    processedCount += 1;
+                }
+            });
+
+            await clearProductCache();
+            logger.info('product_cache_cleared', { reason: 'stock_rollback', orderId });
+            logger.info('stock_release_requested_processed', {
+                orderId,
+                reason,
+                requestedCount: items.length,
+                processedCount,
+                skippedCount,
+            });
+
+            return { processedCount, skippedCount };
+        } finally {
+            await session.endSession();
+        }
+    };
+
     return {
         clearProductCache,
         getHealth,
@@ -128,6 +187,7 @@ const createProductService = ({ redisClient, getRedisReady, getRabbitReady, logg
         updateProduct,
         deleteProduct,
         getProductById,
+        rollbackStock,
     };
 };
 
