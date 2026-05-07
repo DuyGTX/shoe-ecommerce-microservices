@@ -4,7 +4,7 @@ const createPaymentController = ({ paymentService, logger }) => ({
       const result = await paymentService.health();
       return res.status(result.statusCode).json(result.body);
     } catch (error) {
-      logger.error("health_check_failed", { error });
+      logger.error("health_check_failed", { error, requestId: req.requestId });
       return res.status(503).json({
         service: "payment-service",
         status: "down",
@@ -14,27 +14,39 @@ const createPaymentController = ({ paymentService, logger }) => ({
     }
   },
 
-  async createVnpayPayment(req, res) {
+  async createUrl(req, res) {
     try {
-      const result = await paymentService.createVnpayPayment({
+      logger.info("create_payment_url_request_received", {
+        requestId: req.requestId,
+        orderId: req.body?.orderId,
+        amount: req.body?.amount,
+      });
+
+      const result = await paymentService.createPaymentUrl({
         ...req.body,
-        clientIp: req.headers["x-forwarded-for"] || req.socket.remoteAddress,
+        ipAddr: req.headers["x-forwarded-for"] || req.socket.remoteAddress,
         requestId: req.requestId,
       });
       return res.status(result.statusCode).json(result.body);
     } catch (error) {
-      logger.error("create_vnpay_payment_failed", { error, requestId: req.requestId, orderId: req.body?.orderId });
-      return res.status(500).json({ message: "Loi khi tao thanh toan VNPay." });
+      logger.error("create_payment_url_failed", { error, requestId: req.requestId, orderId: req.body?.orderId });
+      return res.status(500).json({ message: "Loi khi tao URL thanh toan VNPay." });
     }
   },
 
-  async handleVnpayReturn(req, res) {
+  async vnpayIpn(req, res) {
     try {
-      const result = await paymentService.handleVnpayReturn({ query: req.query, requestId: req.requestId });
-      return res.status(result.statusCode).json(result.body);
+      logger.info("vnpay_ipn_request_received", { requestId: req.requestId, payload: req.query });
+      const result = await paymentService.processIpn(req.query, req.requestId);
+      return res.status(200).json(result);
     } catch (error) {
-      logger.error("handle_vnpay_return_failed", { error, requestId: req.requestId, transactionRef: req.query?.vnp_TxnRef });
-      return res.status(500).json({ message: "Loi khi xu ly ket qua VNPay." });
+      logger.error("vnpay_ipn_failed", {
+        error,
+        requestId: req.requestId,
+        payload: req.query,
+        vnpTxnRef: req.query?.vnp_TxnRef,
+      });
+      return res.status(200).json({ RspCode: "97", Message: error.message || "Fail checksum" });
     }
   },
 });

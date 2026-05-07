@@ -1,15 +1,17 @@
 const express = require("express");
-const { validate } = require("../middlewares/validateMiddleware");
-const { createPaymentSchema, vnpayReturnSchema } = require("../validations/paymentValidation");
+const { createPaymentController } = require("../controllers/paymentController");
+const validate = require("../middlewares/validateMiddleware");
+const { createPaymentSchema, vnpayIpnSchema } = require("../validations/paymentValidation");
 
-const createPaymentRoutes = ({ paymentController }) => {
+const createPaymentRouter = ({ paymentService, logger }) => {
   const router = express.Router();
+  const paymentController = createPaymentController({ paymentService, logger });
 
   router.get("/health", paymentController.health);
-  router.post("/vnpay/create", validate(createPaymentSchema), paymentController.createVnpayPayment);
-  router.get("/vnpay/return", validate(vnpayReturnSchema), paymentController.handleVnpayReturn);
+  router.post("/create-url", validate(createPaymentSchema), paymentController.createUrl);
+  router.get("/vnpay-ipn", validate(vnpayIpnSchema), paymentController.vnpayIpn);
 
   return router;
 };
 
-module.exports = { createPaymentRoutes };
+module.exports = { createPaymentRouter };

@@ -4,13 +4,13 @@ const createPaymentSchema = {
   body: z.object({
     orderId: z.coerce.number().int().positive(),
     amount: z.coerce.number().int().positive(),
-    orderInfo: z.string().trim().min(1).max(255),
+    orderInfo: z.string().trim().min(1).max(255).optional(),
     bankCode: z.string().trim().max(20).optional(),
     orderType: z.string().trim().max(50).optional(),
   }),
 };
 
-const vnpayReturnSchema = {
+const vnpayIpnSchema = {
   query: z.object({
     vnp_TmnCode: z.string().optional(),
     vnp_Amount: z.string().optional(),
@@ -30,5 +30,5 @@ const vnpayReturnSchema = {
 
 module.exports = {
   createPaymentSchema,
-  vnpayReturnSchema,
+  vnpayIpnSchema,
 };
