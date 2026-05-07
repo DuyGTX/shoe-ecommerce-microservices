@@ -8,8 +8,7 @@ const logger = require("./utils/logger");
 const { createMessageBroker } = require("./utils/messageBroker");
 const { createPaymentTransactionModel } = require("./models/PaymentTransaction");
 const { createPaymentService } = require("./services/paymentService");
-const { createPaymentController } = require("./controllers/paymentController");
-const { createPaymentRoutes } = require("./routes/paymentRoutes");
+const { createPaymentRouter } = require("./routes/paymentRoutes");
 
 const app = express();
 
@@ -49,10 +48,9 @@ app.use((req, res, next) => {
 
 const messageBroker = createMessageBroker({ rabbitmqUrl: process.env.RABBITMQ_URL, logger });
 const paymentTransactionModel = createPaymentTransactionModel({ pool });
-const paymentService = createPaymentService({ paymentTransactionModel, logger });
-const paymentController = createPaymentController({ paymentService, logger });
+const paymentService = createPaymentService({ paymentTransactionModel, messageBroker, logger });
 
-app.use("/", createPaymentRoutes({ paymentController }));
+app.use("/", createPaymentRouter({ paymentService, logger }));
 
 app.use((err, req, res, next) => {
   logger.error("unhandled_request_error", { error: err, requestId: req.requestId });

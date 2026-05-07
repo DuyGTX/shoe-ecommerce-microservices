@@ -1,6 +1,6 @@
 const express = require("express");
 const { createPaymentController } = require("../controllers/paymentController");
-const validate = require("../middlewares/validateMiddleware");
+const { validate } = require("../middlewares/validateMiddleware");
 const { createPaymentSchema, vnpayIpnSchema } = require("../validations/paymentValidation");
 
 const createPaymentRouter = ({ paymentService, logger }) => {
