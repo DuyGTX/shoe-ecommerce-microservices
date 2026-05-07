@@ -162,6 +162,30 @@ const createOrderService = ({ pool, orderModel, getRabbitReady, publishOrderCrea
       return { statusCode: 200, body: { message: "Cập nhật trạng thái đơn hàng thành công!", data: result.rows[0] } };
     },
 
+    async updateOrderStatus(orderId, status) {
+      const current = await orderModel.findStatusById(orderId);
+      if (current.rows.length === 0) {
+        logger.warn("order_status_update_not_found", { orderId, status });
+        return { updated: false, reason: "not_found" };
+      }
+
+      const currentStatus = String(current.rows[0].status || "").toLowerCase();
+      if (["paid", "failed"].includes(currentStatus)) {
+        logger.info("payment_event_idempotent_skipped", { orderId, status, currentStatus });
+        return { updated: false, reason: "terminal_status", currentStatus };
+      }
+
+      const result = await orderModel.updateOrderStatus(orderId, status);
+      logger.info("order_status_updated", {
+        orderId,
+        status,
+        previousStatus: current.rows[0].status,
+        updated: result.rows.length > 0,
+      });
+
+      return { updated: result.rows.length > 0, order: result.rows[0] || null };
+    },
+
     async history(userId) {
       const ordersResult = await orderModel.findByUser(userId);
       const orders = ordersResult.rows;

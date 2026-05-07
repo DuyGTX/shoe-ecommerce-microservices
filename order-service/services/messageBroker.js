@@ -3,8 +3,11 @@ const { sleep } = require("../utils/sleep");
 
 const ORDER_EVENTS_EXCHANGE = "order_events";
 const STOCK_EVENTS_EXCHANGE = "stock_events";
+const PAYMENT_EVENTS_EXCHANGE = "payment_events";
 const STOCK_RESERVED_QUEUE = "order_stock_reserved_queue";
 const STOCK_FAILED_QUEUE = "order_stock_failed_queue";
+const PAYMENT_COMPLETED_QUEUE = "order_payment_completed_queue";
+const PAYMENT_FAILED_QUEUE = "order_payment_failed_queue";
 
 const createMessageBroker = ({ rabbitmqUrl, logger }) => {
   let rabbitConnection;
@@ -51,6 +54,35 @@ const createMessageBroker = ({ rabbitmqUrl, logger }) => {
     return published;
   };
 
+  const publishStockReleaseRequested = (orderId, reason = "payment_failed") => {
+    if (!rabbitChannel) {
+      logger.warn("rabbitmq_publish_skipped", {
+        exchange: STOCK_EVENTS_EXCHANGE,
+        routingKey: "stock.release_requested",
+        orderId,
+        reason: "channel_not_ready",
+      });
+      return false;
+    }
+
+    const payload = { orderId, reason };
+    const published = rabbitChannel.publish(
+      STOCK_EVENTS_EXCHANGE,
+      "stock.release_requested",
+      Buffer.from(JSON.stringify(payload)),
+      { persistent: true, contentType: "application/json" },
+    );
+
+    logger.info("rabbitmq_event_published", {
+      exchange: STOCK_EVENTS_EXCHANGE,
+      routingKey: "stock.release_requested",
+      orderId,
+      reason,
+      published,
+    });
+    return published;
+  };
+
   const consumeStockEvents = async () => {
     rabbitChannel.consume(STOCK_RESERVED_QUEUE, async (msg) => {
       if (!msg) return;
@@ -83,6 +115,45 @@ const createMessageBroker = ({ rabbitmqUrl, logger }) => {
     });
   };
 
+  const consumePaymentEvents = async () => {
+    rabbitChannel.consume(PAYMENT_COMPLETED_QUEUE, async (msg) => {
+      if (!msg) return;
+      const routingKey = msg.fields.routingKey;
+      let orderId;
+      try {
+        ({ orderId } = JSON.parse(msg.content.toString()));
+        logger.info("rabbitmq_event_consumed", { queue: PAYMENT_COMPLETED_QUEUE, routingKey, orderId, status: "paid" });
+        await orderService.updateOrderStatus(orderId, "paid");
+        rabbitChannel.ack(msg);
+        logger.info("rabbitmq_message_acked", { queue: PAYMENT_COMPLETED_QUEUE, routingKey, orderId, status: "paid" });
+      } catch (err) {
+        logger.error("payment_completed_consume_failed", { error: err, queue: PAYMENT_COMPLETED_QUEUE, routingKey, orderId });
+        rabbitChannel.nack(msg, false, true);
+        logger.warn("rabbitmq_message_nacked", { queue: PAYMENT_COMPLETED_QUEUE, routingKey, orderId, requeue: true });
+      }
+    });
+
+    rabbitChannel.consume(PAYMENT_FAILED_QUEUE, async (msg) => {
+      if (!msg) return;
+      const routingKey = msg.fields.routingKey;
+      let orderId;
+      try {
+        ({ orderId } = JSON.parse(msg.content.toString()));
+        logger.info("rabbitmq_event_consumed", { queue: PAYMENT_FAILED_QUEUE, routingKey, orderId, status: "failed" });
+        const result = await orderService.updateOrderStatus(orderId, "failed");
+        if (result.updated) {
+          publishStockReleaseRequested(orderId, "payment_failed");
+        }
+        rabbitChannel.ack(msg);
+        logger.info("rabbitmq_message_acked", { queue: PAYMENT_FAILED_QUEUE, routingKey, orderId, status: "failed" });
+      } catch (err) {
+        logger.error("payment_failed_consume_failed", { error: err, queue: PAYMENT_FAILED_QUEUE, routingKey, orderId });
+        rabbitChannel.nack(msg, false, true);
+        logger.warn("rabbitmq_message_nacked", { queue: PAYMENT_FAILED_QUEUE, routingKey, orderId, requeue: true });
+      }
+    });
+  };
+
   const connect = async () => {
     if (isShuttingDown) return;
 
@@ -102,6 +173,7 @@ const createMessageBroker = ({ rabbitmqUrl, logger }) => {
       });
       await rabbitChannel.assertExchange(ORDER_EVENTS_EXCHANGE, "topic", { durable: true });
       await rabbitChannel.assertExchange(STOCK_EVENTS_EXCHANGE, "topic", { durable: true });
+      await rabbitChannel.assertExchange(PAYMENT_EVENTS_EXCHANGE, "topic", { durable: true });
       await rabbitChannel.assertExchange("clear_cart_dlx", "direct", { durable: true });
       await rabbitChannel.assertQueue("clear_cart_dlq", { durable: true });
       await rabbitChannel.bindQueue("clear_cart_dlq", "clear_cart_dlx", "clear_cart_failed");
@@ -117,10 +189,16 @@ const createMessageBroker = ({ rabbitmqUrl, logger }) => {
       await rabbitChannel.assertQueue(STOCK_FAILED_QUEUE, { durable: true });
       await rabbitChannel.bindQueue(STOCK_FAILED_QUEUE, STOCK_EVENTS_EXCHANGE, "stock.failed");
 
+      await rabbitChannel.assertQueue(PAYMENT_COMPLETED_QUEUE, { durable: true });
+      await rabbitChannel.bindQueue(PAYMENT_COMPLETED_QUEUE, PAYMENT_EVENTS_EXCHANGE, "payment.completed");
+      await rabbitChannel.assertQueue(PAYMENT_FAILED_QUEUE, { durable: true });
+      await rabbitChannel.bindQueue(PAYMENT_FAILED_QUEUE, PAYMENT_EVENTS_EXCHANGE, "payment.failed");
+
       await consumeStockEvents();
+      await consumePaymentEvents();
       logger.info("rabbitmq_connected", {
-        exchanges: [ORDER_EVENTS_EXCHANGE, STOCK_EVENTS_EXCHANGE, "clear_cart_dlx"],
-        queues: ["clear_cart_queue_v2", "clear_cart_dlq", STOCK_RESERVED_QUEUE, STOCK_FAILED_QUEUE],
+        exchanges: [ORDER_EVENTS_EXCHANGE, STOCK_EVENTS_EXCHANGE, PAYMENT_EVENTS_EXCHANGE, "clear_cart_dlx"],
+        queues: ["clear_cart_queue_v2", "clear_cart_dlq", STOCK_RESERVED_QUEUE, STOCK_FAILED_QUEUE, PAYMENT_COMPLETED_QUEUE, PAYMENT_FAILED_QUEUE],
       });
     } catch (error) {
       logger.error("rabbitmq_connect_failed", { error });

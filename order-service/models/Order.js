@@ -51,6 +51,10 @@ const createOrderModel = ({ pool }) => ({
     );
   },
 
+  async findStatusById(orderId) {
+    return pool.query("SELECT id, status FROM orders WHERE id = $1", [orderId]);
+  },
+
   async findById(orderId) {
     return pool.query("SELECT * FROM orders WHERE id = $1", [orderId]);
   },
@@ -76,6 +80,16 @@ const createOrderModel = ({ pool }) => ({
   async updateStatus(orderId, status) {
     return pool.query(
       "UPDATE orders SET status = $1 WHERE id = $2 RETURNING *",
+      [status, orderId],
+    );
+  },
+
+  async updateOrderStatus(orderId, status) {
+    return pool.query(
+      `UPDATE orders
+       SET status = $1
+       WHERE id = $2 AND LOWER(status) NOT IN ('paid', 'failed')
+       RETURNING *`,
       [status, orderId],
     );
   },
