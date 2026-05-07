@@ -98,6 +98,8 @@ services:
         condition: service_healthy
       order-service:
         condition: service_healthy
+      payment-service:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8000/health || exit 1"]
       start_period: 30s
@@ -189,6 +191,36 @@ services:
       timeout: 5s
       retries: 10
 
+  payment-service:
+    build: ./payment-service
+    container_name: shoe_payment_service
+    restart: always
+    environment:
+      - PORT=${PAYMENT_SERVICE_PORT:-3004}
+      - DB_USER=${POSTGRES_USER}
+      - DB_HOST=postgres-db
+      - DB_NAME=${PAYMENT_DB_NAME:-payment_db}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      - DB_PORT=5432
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+      - VNPAY_TMN_CODE=${VNPAY_TMN_CODE:-YOUR_SANDBOX_TMN_CODE}
+      - VNPAY_HASH_SECRET=${VNPAY_HASH_SECRET:-YOUR_SANDBOX_HASH_SECRET}
+      - VNPAY_URL=${VNPAY_URL:-https://sandbox.vnpayment.vn/paymentv2/vpcpay.html}
+      - VNPAY_RETURN_URL=${VNPAY_RETURN_URL:-http://localhost:3000/payments/vnpay/return}
+    ports:
+      - "3004:3004"
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3004/health || exit 1"]
+      start_period: 30s
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
   smoke-test:
     image: node:20-alpine
     container_name: shoe_smoke_test
@@ -208,6 +240,8 @@ services:
       product-service:
         condition: service_healthy
       order-service:
+        condition: service_healthy
+      payment-service:
         condition: service_healthy
     restart: "no"
     profiles:
@@ -230,7 +264,7 @@ services:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
     ports:
-      - "3004:3000"
+      - "3005:3000"
     depends_on:
       - prometheus
 

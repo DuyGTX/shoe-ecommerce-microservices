@@ -158,7 +158,8 @@ const probeService = async (name, url) => {
 const swaggerSpecTargets = {
     'user-service': 'http://user-service:3001/swagger.json',
     'product-service': 'http://product-service:3002/swagger.json',
-    'order-service': 'http://order-service:3003/swagger.json'
+    'order-service': 'http://order-service:3003/swagger.json',
+    'payment-service': 'http://payment-service:3004/swagger.json'
 };
 
 app.use(helmet());
@@ -460,6 +461,19 @@ app.use('/api/products', createProxyMiddleware({
     }
 }));
 
+// Chuyển hướng sang Payment Service (Cổng 3004)
+app.use('/api/payments', createProxyMiddleware({
+    target: 'http://payment-service:3004',
+    changeOrigin: true,
+    pathRewrite: { '^/api/payments': '' },
+    onProxyReq: (proxyReq, req) => {
+        const headers = buildServiceHeaders(req, { forwardAuthorization: true });
+        Object.entries(headers).forEach(([key, value]) => {
+            proxyReq.setHeader(key, value);
+        });
+    }
+}));
+
 // Expose internal service health checks through the gateway only.
 app.get('/api/orders/health', async (req, res) => {
     try {
@@ -485,7 +499,8 @@ app.get('/health', async (req, res) => {
     const checks = await Promise.all([
         probeService('user-service', 'http://user-service:3001/health'),
         probeService('product-service', 'http://product-service:3002/health'),
-        probeService('order-service', 'http://order-service:3003/health')
+        probeService('order-service', 'http://order-service:3003/health'),
+        probeService('payment-service', 'http://payment-service:3004/health')
     ]);
 
     const hasFailure = checks.some((item) => item.status !== 'up');
