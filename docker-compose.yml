@@ -203,10 +203,10 @@ services:
       - DB_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       - DB_PORT=5432
       - RABBITMQ_URL=amqp://rabbitmq:5672
-      - VNPAY_TMN_CODE=${VNPAY_TMN_CODE:-YOUR_SANDBOX_TMN_CODE}
-      - VNPAY_HASH_SECRET=${VNPAY_HASH_SECRET:-YOUR_SANDBOX_HASH_SECRET}
-      - VNPAY_URL=${VNPAY_URL:-https://sandbox.vnpayment.vn/paymentv2/vpcpay.html}
-      - VNPAY_RETURN_URL=${VNPAY_RETURN_URL:-http://localhost:3000/payments/vnpay/return}
+      - VNPAY_TMN_CODE=${VNPAY_TMN_CODE}
+      - VNPAY_HASH_SECRET=${VNPAY_HASH_SECRET}
+      - VNPAY_URL=${VNPAY_URL}
+      - VNPAY_RETURN_URL=${VNPAY_RETURN_URL}
     depends_on:
       postgres-db:
         condition: service_healthy
