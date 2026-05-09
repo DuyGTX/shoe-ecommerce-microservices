@@ -195,6 +195,8 @@ services:
     build: ./payment-service
     container_name: shoe_payment_service
     restart: always
+    env_file:
+      - ./payment-service/.env
     environment:
       - PORT=${PAYMENT_SERVICE_PORT:-3004}
       - DB_USER=${POSTGRES_USER}
@@ -202,6 +204,10 @@ services:
       - DB_NAME=${PAYMENT_DB_NAME:-payment_db}
       - DB_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       - DB_PORT=5432
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
+      - INTERNAL_SERVICE_TOKEN=${INTERNAL_SERVICE_TOKEN:?INTERNAL_SERVICE_TOKEN is required}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:5173,http://api-gateway:3000}
       - RABBITMQ_URL=amqp://rabbitmq:5672
       - VNPAY_TMN_CODE=${VNPAY_TMN_CODE}
       - VNPAY_HASH_SECRET=${VNPAY_HASH_SECRET}
@@ -284,8 +290,10 @@ services:
     command: -config.file=/etc/promtail/config.yml
     volumes:
       - ./promtail/config.yml:/etc/promtail/config.yml:ro
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      # Linux default paths are used by default.
+      # Windows Docker Desktop: set PROMTAIL_DOCKER_SOCK_PATH and PROMTAIL_DOCKER_CONTAINERS_PATH in .env.
+      - ${PROMTAIL_DOCKER_SOCK_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
+      - ${PROMTAIL_DOCKER_CONTAINERS_PATH:-/var/lib/docker/containers}:/var/lib/docker/containers:ro
     depends_on:
       - loki
 

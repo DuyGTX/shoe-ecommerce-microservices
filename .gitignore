@@ -7,4 +7,4 @@ node_modules/
 !.env.example
 
 # Bỏ qua log
-npm-debug.logv
+npm-debug.log*

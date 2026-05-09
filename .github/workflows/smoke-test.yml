@@ -20,6 +20,7 @@ jobs:
           cp user-service/.env.example user-service/.env
           cp order-service/.env.example order-service/.env
           cp product-service/.env.example product-service/.env
+          cp payment-service/.env.example payment-service/.env
 
           # Ensure required root vars exist for docker-compose interpolation
           {
@@ -28,11 +29,24 @@ jobs:
             echo "JWT_SECRET=ci-jwt-secret"
             echo "ADMIN_SECRET=ci-admin-secret"
             echo "INTERNAL_SERVICE_TOKEN=ci-internal-token"
+            echo "METRICS_TOKEN=ci-metrics-token"
             echo "USER_DB_NAME=shoe_user_db"
             echo "ORDER_DB_NAME=shoe_order_db"
+            echo "PAYMENT_DB_NAME=shoe_payment_db"
             echo "USER_SERVICE_PORT=3001"
             echo "PRODUCT_SERVICE_PORT=3002"
             echo "ORDER_SERVICE_PORT=3003"
+            echo "PAYMENT_SERVICE_PORT=3004"
+            echo "LOG_LEVEL=info"
+            echo "ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://api-gateway:3000"
+            echo "VNPAY_TMN_CODE=test_tmn_code"
+            echo "VNPAY_HASH_SECRET=test_hash_secret"
+            echo "VNPAY_URL=https://sandbox.vnpayment.vn/paymentv2/vpcpay.html"
+            echo "VNPAY_RETURN_URL=http://localhost:3000/api/payments/vnpay-return"
+            echo "GRAFANA_ADMIN_USER=ci-admin"
+            echo "GRAFANA_ADMIN_PASSWORD=ci-admin-password"
+            echo "PROMTAIL_DOCKER_SOCK_PATH=/var/run/docker.sock"
+            echo "PROMTAIL_DOCKER_CONTAINERS_PATH=/var/lib/docker/containers"
           } > .env
 
       - name: Validate docker compose
