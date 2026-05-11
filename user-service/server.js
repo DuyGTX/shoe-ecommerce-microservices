@@ -10,6 +10,7 @@ const { sleep } = require("./utils/httpClient");
 const logger = require("./utils/logger");
 const { register, httpRequestDurationSeconds, httpRequestsTotal } = require("./metrics");
 const openApiSpec = require("./openapi.json");
+const { createErrorHandler } = require("./middlewares/errorHandler");
 
 const app = express();
 
@@ -143,6 +144,7 @@ const consumeRabbitMQ = async () => {
 
 consumeRabbitMQ();
 app.use("/", userRoutes);
+app.use(createErrorHandler(logger));
 
 const PORT = process.env.PORT || 3001;
 const server = app.listen(PORT, () => {

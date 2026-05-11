@@ -1,23 +1,24 @@
 const jwt = require("jsonwebtoken");
+const { AppError } = require("./AppError");
 
 const verifyToken = (req, res, next) => {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
 
   if (!token) {
-    return res.status(401).json({ message: "Unauthorized." });
+    return next(new AppError("Unauthorized.", 401));
   }
 
   const jwtSecret = process.env.JWT_SECRET;
   if (!jwtSecret) {
-    return res.status(500).json({ message: "Server JWT configuration is missing." });
+    return next(new AppError("Server JWT configuration is missing.", 500));
   }
 
   try {
     req.user = jwt.verify(token, jwtSecret);
     return next();
   } catch (error) {
-    return res.status(401).json({ message: "Unauthorized." });
+    return next(new AppError("Unauthorized.", 401));
   }
 };
 

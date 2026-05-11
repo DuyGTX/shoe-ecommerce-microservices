@@ -15,8 +15,14 @@ const validate = (schemas = {}) => (req, res, next) => {
   } catch (error) {
     if (error instanceof ZodError) {
       return res.status(400).json({
-        message: "Dữ liệu đầu vào không hợp lệ.",
-        errors: formatZodError(error),
+        success: false,
+        error: {
+          code: 400,
+          message: "Dữ liệu đầu vào không hợp lệ.",
+          requestId: req.requestId || req.headers["x-request-id"] || "unknown",
+          details: formatZodError(error),
+          timestamp: new Date().toISOString(),
+        },
       });
     }
 

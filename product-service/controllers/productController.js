@@ -1,81 +1,83 @@
+const { AppError } = require('../middlewares/AppError');
+
 const createProductController = ({ productService }) => ({
     health: (req, res) => {
         const health = productService.getHealth();
         res.status(health.httpStatus).json(health.body);
     },
 
-    uploadImage: async (req, res) => {
+    uploadImage: async (req, res, next) => {
         try {
-            if (!req.file) return res.status(400).json({ message: 'Vui lòng chọn ảnh!' });
+            if (!req.file) return next(new AppError('Vui lòng chọn ảnh!', 400));
             const imageUrl = await productService.uploadImage(req.file);
             res.status(200).json({ message: 'Upload thành công!', imageUrl });
         } catch (err) {
-            res.status(500).json({ message: 'Lỗi upload ảnh', error: err.message });
+            return next(err);
         }
     },
 
-    addProduct: async (req, res) => {
+    addProduct: async (req, res, next) => {
         try {
             const savedProduct = await productService.addProduct(req.body);
             res.status(201).json({ message: 'Đã thêm giày mới!', data: savedProduct });
         } catch (err) {
-            res.status(500).json({ message: 'Lỗi thêm sản phẩm', error: err.message });
+            return next(err);
         }
     },
 
-    getAllProducts: async (req, res) => {
+    getAllProducts: async (req, res, next) => {
         try {
             const result = await productService.getAllProducts();
             res.status(200).json(result.body);
         } catch (err) {
-            res.status(500).json({ message: 'Lỗi lấy dữ liệu', error: err.message });
+            return next(err);
         }
     },
 
-    searchProducts: async (req, res) => {
+    searchProducts: async (req, res, next) => {
         try {
             const body = await productService.searchProducts(req.query);
             res.status(200).json(body);
         } catch (err) {
-            res.status(500).json({ message: 'Lỗi tìm kiếm', error: err.message });
+            return next(err);
         }
     },
 
-    updateProduct: async (req, res) => {
+    updateProduct: async (req, res, next) => {
         try {
             const updatedProduct = await productService.updateProduct(req.params.id, req.body);
 
             if (!updatedProduct) {
-                return res.status(404).json({ message: 'Không tìm thấy sản phẩm để cập nhật!' });
+                return next(new AppError('Không tìm thấy sản phẩm để cập nhật!', 404));
             }
 
             res.status(200).json({ message: 'Cập nhật sản phẩm thành công!', data: updatedProduct });
         } catch (err) {
-            res.status(500).json({ message: 'Lỗi cập nhật sản phẩm', error: err.message });
+            return next(err);
         }
     },
 
-    deleteProduct: async (req, res) => {
+    deleteProduct: async (req, res, next) => {
         try {
             const deletedProduct = await productService.deleteProduct(req.params.id);
 
             if (!deletedProduct) {
-                return res.status(404).json({ message: 'Không tìm thấy sản phẩm để xóa!' });
+                return next(new AppError('Không tìm thấy sản phẩm để xóa!', 404));
             }
 
             res.status(200).json({ message: 'Xóa sản phẩm thành công!' });
         } catch (err) {
-            res.status(500).json({ message: 'Lỗi xóa sản phẩm', error: err.message });
+            return next(err);
         }
     },
 
-    getProductById: async (req, res) => {
+    getProductById: async (req, res, next) => {
         try {
             const product = await productService.getProductById(req.params.id);
-            if (!product) return res.status(404).json({ message: 'Không tìm thấy!' });
+            if (!product) return next(new AppError('Không tìm thấy!', 404));
             res.status(200).json({ data: product });
         } catch (err) {
-            res.status(500).json({ message: 'Lỗi định dạng ID', error: err.message });
+            return next(err);
         }
     },
 });

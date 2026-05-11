@@ -14,6 +14,7 @@ const logger = require('./utils/logger');
 const { createProductService } = require('./services/productService');
 const { createStockService } = require('./services/stockService');
 const { createProductRoutes } = require('./routes/productRoutes');
+const { createErrorHandler } = require('./middlewares/errorHandler');
 
 const app = express();
 
@@ -179,6 +180,7 @@ app.get('/swagger.json', (req, res) => {
 });
 
 app.use('/', createProductRoutes({ productService }));
+app.use(createErrorHandler(logger));
 
 // ---------------------------------------------------------
 const PORT = process.env.PORT || 3002;

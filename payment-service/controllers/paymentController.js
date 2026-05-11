@@ -14,7 +14,7 @@ const createPaymentController = ({ paymentService, logger }) => ({
     }
   },
 
-  async createUrl(req, res) {
+  async createUrl(req, res, next) {
     try {
       logger.info("create_payment_url_request_received", {
         requestId: req.requestId,
@@ -30,7 +30,7 @@ const createPaymentController = ({ paymentService, logger }) => ({
       return res.status(result.statusCode).json(result.body);
     } catch (error) {
       logger.error("create_payment_url_failed", { error, requestId: req.requestId, orderId: req.body?.orderId });
-      return res.status(500).json({ message: "Loi khi tao URL thanh toan VNPay." });
+      return next(error);
     }
   },
 

@@ -11,6 +11,7 @@ const { createMessageBroker } = require("./utils/messageBroker");
 const { createPaymentTransactionModel } = require("./models/PaymentTransaction");
 const { createPaymentService } = require("./services/paymentService");
 const { createPaymentRouter } = require("./routes/paymentRoutes");
+const { createErrorHandler } = require("./middlewares/errorHandler");
 
 const app = express();
 
@@ -59,10 +60,7 @@ logger.info("env_files_loaded", {
 
 app.use("/", createPaymentRouter({ paymentService, logger }));
 
-app.use((err, req, res, next) => {
-  logger.error("unhandled_request_error", { error: err, requestId: req.requestId });
-  return res.status(500).json({ message: "Internal server error." });
-});
+app.use(createErrorHandler(logger));
 
 messageBroker.connect();
 

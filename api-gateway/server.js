@@ -7,6 +7,8 @@ const axios = require('axios');
 const swaggerUi = require('swagger-ui-express');
 const swaggerPortalOptions = require('./swagger');
 const { register, httpRequestDurationSeconds, httpRequestsTotal } = require('./metrics');
+const { createErrorHandler } = require('./middlewares/errorHandler');
+const { AppError } = require('./middlewares/AppError');
 const app = express();
 const trustProxyHops = Number(process.env.TRUST_PROXY_HOPS || 1);
 app.set('trust proxy', Number.isFinite(trustProxyHops) ? trustProxyHops : 1);
@@ -86,7 +88,7 @@ const protectMetricsEndpoint = (req, res, next) => {
     }
 
     log('warn', 'metrics_access_denied', { requestId: req.requestId, remoteIp });
-    return res.status(403).json({ message: 'Metrics endpoint is only available inside the private network.' });
+    return next(new AppError('Metrics endpoint is only available inside the private network.', 403));
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -157,6 +159,13 @@ const probeService = async (name, url) => {
     }
 };
 
+const forwardGatewayError = (err, fallbackMessage, fallbackStatus = 500, details = []) => {
+    const upstreamError = err.response?.data?.error;
+    const message = upstreamError?.message || err.response?.data?.message || fallbackMessage;
+    const responseDetails = upstreamError?.details || err.response?.data?.errors || details;
+    return new AppError(message, err.response?.status || fallbackStatus, responseDetails);
+};
+
 const swaggerSpecTargets = {
     'user-service': 'http://user-service:3001/swagger.json',
     'product-service': 'http://product-service:3002/swagger.json',
@@ -167,10 +176,10 @@ const swaggerSpecTargets = {
 app.use(helmet());
 app.use(cors(corsOptions));
 
-app.get('/api-docs/specs/:service.json', async (req, res) => {
+app.get('/api-docs/specs/:service.json', async (req, res, next) => {
     const targetUrl = swaggerSpecTargets[req.params.service];
     if (!targetUrl) {
-        return res.status(404).json({ message: 'Unknown Swagger spec.' });
+        return next(new AppError('Unknown Swagger spec.', 404));
     }
 
     try {
@@ -178,7 +187,7 @@ app.get('/api-docs/specs/:service.json', async (req, res) => {
         res.set('Cache-Control', 'no-store');
         return res.status(response.status).json(response.data);
     } catch (err) {
-        return res.status(err.response?.status || 503).json({ message: 'Swagger spec unavailable', service: req.params.service });
+        return next(new AppError('Swagger spec unavailable', err.response?.status || 503, [{ service: req.params.service }]));
     }
 });
 
@@ -477,7 +486,7 @@ app.use('/api/payments', createProxyMiddleware({
 }));
 
 // Expose internal service health checks through the gateway only.
-app.get('/api/orders/health', async (req, res) => {
+app.get('/api/orders/health', async (req, res, next) => {
     try {
         const response = await requestWithRetry({
             method: 'get',
@@ -487,7 +496,7 @@ app.get('/api/orders/health', async (req, res) => {
         }, { retries: 2, delayMs: 200 });
         res.status(response.status).json(response.data);
     } catch (err) {
-        res.status(err.response?.status || 503).json(err.response?.data || { message: 'Order health check failed' });
+        return next(forwardGatewayError(err, 'Order health check failed', 503));
     }
 });
 
@@ -514,7 +523,7 @@ app.get('/health', async (req, res) => {
 });
 
 // Chuyển hướng Giỏ Hàng bằng Axios
-app.post('/api/cart/add', async (req, res) => {
+app.post('/api/cart/add', async (req, res, next) => {
     try {
         // CỰC KỲ QUAN TRỌNG: Phải copy cái Token từ Gateway đưa sang User Service
         const config = {
@@ -524,11 +533,11 @@ app.post('/api/cart/add', async (req, res) => {
         const response = await requestWithRetry({ method: 'post', url: 'http://user-service:3001/cart/add', data: req.body, ...config, timeout: 4000 });
         res.status(response.status).json(response.data);
     } catch (err) {
-        res.status(err.response?.status || 500).json(err.response?.data || { message: 'Lỗi Gateway' });
+        return next(forwardGatewayError(err, 'Lỗi Gateway'));
     }
 });
 // Chuyển hướng lấy Giỏ Hàng bằng Axios
-app.get('/api/cart', async (req, res) => {
+app.get('/api/cart', async (req, res, next) => {
     try {
         // Bắt buộc phải bê theo Token từ khách hàng chuyển sang cho User Service
         const config = {
@@ -538,32 +547,32 @@ app.get('/api/cart', async (req, res) => {
         const response = await requestWithRetry({ method: 'get', url: 'http://user-service:3001/cart', ...config, timeout: 4000 });
         res.status(response.status).json(response.data);
     } catch (err) {
-        res.status(err.response?.status || 500).json(err.response?.data || { message: 'Lỗi Gateway' });
+        return next(forwardGatewayError(err, 'Lỗi Gateway'));
     }
 });
 // Chuyển hướng Cập nhật Giỏ hàng
-app.put('/api/cart/update', async (req, res) => {
+app.put('/api/cart/update', async (req, res, next) => {
     try {
         const config = { headers: buildServiceHeaders(req, { forwardAuthorization: true }) };
         const response = await requestWithRetry({ method: 'put', url: 'http://user-service:3001/cart/update', data: req.body, ...config, timeout: 4000 });
         res.status(response.status).json(response.data);
     } catch (err) {
-        res.status(err.response?.status || 500).json(err.response?.data || { message: 'Lỗi Gateway' });
+        return next(forwardGatewayError(err, 'Lỗi Gateway'));
     }
 });
 
 // Chuyển hướng Xóa sản phẩm khỏi Giỏ hàng
-app.delete('/api/cart/remove/:cartItemId', async (req, res) => {
+app.delete('/api/cart/remove/:cartItemId', async (req, res, next) => {
     try {
         const config = { headers: buildServiceHeaders(req, { forwardAuthorization: true }) };
         const response = await requestWithRetry({ method: 'delete', url: `http://user-service:3001/cart/remove/${req.params.cartItemId}`, ...config, timeout: 4000 });
         res.status(response.status).json(response.data);
     } catch (err) {
-        res.status(err.response?.status || 500).json(err.response?.data || { message: 'Lỗi Gateway' });
+        return next(forwardGatewayError(err, 'Lỗi Gateway'));
     }
 });
 // Chuyển hướng Checkout (Thanh toán) sang Order Service (Cổng 3003)
-app.post('/api/orders/checkout', async (req, res) => {
+app.post('/api/orders/checkout', async (req, res, next) => {
     try {
         const config = {
             headers: {
@@ -575,11 +584,11 @@ app.post('/api/orders/checkout', async (req, res) => {
         const response = await requestWithRetry({ method: 'post', url: 'http://order-service:3003/checkout', data: {}, ...config, timeout: 5000 });
         res.status(response.status).json(response.data);
     } catch (err) {
-        res.status(err.response?.status || 500).json(err.response?.data || { message: 'Lỗi Gateway Order' });
+        return next(forwardGatewayError(err, 'Lỗi Gateway Order'));
     }
 });
 // Chuyển hướng Lịch sử Đơn hàng sang Order Service (Cổng 3003)
-app.get('/api/orders/history', async (req, res) => {
+app.get('/api/orders/history', async (req, res, next) => {
     try {
         // Gắn Token vào xe chở hàng
         const config = { headers: buildServiceHeaders(req, { forwardAuthorization: true }) };
@@ -588,7 +597,7 @@ app.get('/api/orders/history', async (req, res) => {
         const response = await requestWithRetry({ method: 'get', url: 'http://order-service:3003/history', ...config, timeout: 5000 });
         res.status(response.status).json(response.data);
     } catch (err) {
-        res.status(err.response?.status || 500).json(err.response?.data || { message: 'Lỗi Gateway Order History' });
+        return next(forwardGatewayError(err, 'Lỗi Gateway Order History'));
     }
 });
 // =========================================================
@@ -596,6 +605,8 @@ app.get('/api/orders/history', async (req, res) => {
 app.get('/', (req, res) => {
     res.status(200).json({ message: '🚦 API Gateway đang hoạt động mượt mà!' });
 });
+
+app.use(createErrorHandler({ error: (message, extra) => log('error', message, extra) }));
 
 const PORT = 8000;
 app.listen(PORT, () => {

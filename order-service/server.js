@@ -14,6 +14,7 @@ const { createOrderRoutes } = require("./routes/orderRoutes");
 const { createAdminMiddleware } = require("./middlewares/adminMiddleware");
 const { createAuthMiddleware } = require("./middlewares/authMiddleware");
 const logger = require("./utils/logger");
+const { createErrorHandler } = require("./middlewares/errorHandler");
 
 const app = express();
 
@@ -90,6 +91,7 @@ const orderController = createOrderController({
 });
 
 app.use("/", createOrderRoutes({ orderController, requireAdmin, verifyToken }));
+app.use(createErrorHandler(logger));
 
 messageBroker.connect();
 
