@@ -32,7 +32,7 @@ jobs:
             echo "METRICS_TOKEN=ci-metrics-token"
             echo "USER_DB_NAME=shoe_user_db"
             echo "ORDER_DB_NAME=shoe_order_db"
-            echo "PAYMENT_DB_NAME=shoe_payment_db"
+            echo "PAYMENT_DB_NAME=payment_db"
             echo "USER_SERVICE_PORT=3001"
             echo "PRODUCT_SERVICE_PORT=3002"
             echo "ORDER_SERVICE_PORT=3003"
