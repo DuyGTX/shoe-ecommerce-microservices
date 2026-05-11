@@ -7,7 +7,16 @@ const health = async (req, res) => {
   try {
     return res.status(200).json(await userService.health());
   } catch (err) {
-    return res.status(503).json({ service: "user-service", status: "down", checks: { postgres: "down" }, error: err.message });
+    return res.status(503).json({
+      success: false,
+      error: {
+        code: 503,
+        message: "Health check failed.",
+        requestId: req.requestId || req.headers["x-request-id"] || "unknown",
+        details: [{ service: "user-service", checks: { postgres: "down" } }],
+        timestamp: new Date().toISOString(),
+      },
+    });
   }
 };
 

@@ -6,13 +6,20 @@ const createOrderController = ({ orderService, getRabbitReady, logger }) => ({
     } catch (err) {
       logger.error("health_check_failed", { error: err });
       return res.status(503).json({
-        service: "order-service",
-        status: "down",
-        checks: {
-          postgres: "down",
-          rabbitmq: getRabbitReady() ? "up" : "down",
+        success: false,
+        error: {
+          code: 503,
+          message: "Health check failed.",
+          requestId: req.requestId || req.headers["x-request-id"] || "unknown",
+          details: [{
+            service: "order-service",
+            checks: {
+              postgres: "down",
+              rabbitmq: getRabbitReady() ? "up" : "down",
+            },
+          }],
+          timestamp: new Date().toISOString(),
         },
-        error: err.message,
       });
     }
   },

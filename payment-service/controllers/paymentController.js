@@ -6,10 +6,14 @@ const createPaymentController = ({ paymentService, logger }) => ({
     } catch (error) {
       logger.error("health_check_failed", { error, requestId: req.requestId });
       return res.status(503).json({
-        service: "payment-service",
-        status: "down",
-        checks: { postgres: "down" },
-        error: error.message,
+        success: false,
+        error: {
+          code: 503,
+          message: "Health check failed.",
+          requestId: req.requestId || req.headers["x-request-id"] || "unknown",
+          details: [{ service: "payment-service", checks: { postgres: "down" } }],
+          timestamp: new Date().toISOString(),
+        },
       });
     }
   },
